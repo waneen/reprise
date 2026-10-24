@@ -1,0 +1,8 @@
+[package]
+name = "reprise-chart-bmson"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+reprise-chart-core = { path = "../reprise-chart-core" }

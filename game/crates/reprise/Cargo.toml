@@ -1,0 +1,18 @@
+[package]
+name = "reprise"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { path = "../domain" }
+application = { path = "../application" }
+chart-loader = { path = "../adapters/chart-loader" }
+skin-loader = { path = "../adapters/skin-loader" }
+score-import-lr2 = { path = "../adapters/score-import-lr2" }
+score-import-beatoraja = { path = "../adapters/score-import-beatoraja" }
+reprise-chart-bms = { path = "../../../chart-formats/crates/reprise-chart-bms" }
+reprise-chart-bmson = { path = "../../../chart-formats/crates/reprise-chart-bmson" }
+reprise-skin-lr2csv = { path = "../../../skin-formats/crates/reprise-skin-lr2csv" }
+reprise-skin-beatoraja = { path = "../../../skin-formats/crates/reprise-skin-beatoraja" }
+# bevy = "..."  ← Bevyに依存するのはこのcrateだけ

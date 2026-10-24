@@ -1,0 +1,9 @@
+[package]
+name = "score-import-lr2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { path = "../../domain" }
+application = { path = "../../application" }

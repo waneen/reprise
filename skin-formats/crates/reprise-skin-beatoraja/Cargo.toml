@@ -1,0 +1,8 @@
+[package]
+name = "reprise-skin-beatoraja"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+reprise-skin-core = { path = "../reprise-skin-core" }

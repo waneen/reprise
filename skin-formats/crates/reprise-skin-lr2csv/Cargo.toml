@@ -1,0 +1,8 @@
+[package]
+name = "reprise-skin-lr2csv"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+reprise-skin-core = { path = "../reprise-skin-core" }

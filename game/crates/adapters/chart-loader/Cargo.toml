@@ -1,0 +1,10 @@
+[package]
+name = "chart-loader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { path = "../../domain" }
+application = { path = "../../application" }
+reprise-chart-core = { path = "../../../../chart-formats/crates/reprise-chart-core" }

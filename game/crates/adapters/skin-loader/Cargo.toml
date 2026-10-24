@@ -1,0 +1,10 @@
+[package]
+name = "skin-loader"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+domain = { path = "../../domain" }
+application = { path = "../../application" }
+reprise-skin-core = { path = "../../../../skin-formats/crates/reprise-skin-core" }
