@@ -1,8 +1,16 @@
 //! プレイ中のルール：判定・ゲージ・ノーツ位置計算。
 //! LR2 / beatoraja でルールが違うので Ruleset をドメインの戦略として持つ。
-use crate::chart::Lane;
+use crate::chart::{ChartMeta, Lane};
 
+pub mod beatoraja;
+mod gauge;
+mod judge;
+pub mod lr2;
 mod timing;
+pub use beatoraja::BeatorajaRuleset;
+pub use gauge::{Gauge, GaugeType};
+pub use judge::{JudgeLane, JudgeWindows, Window};
+pub use lr2::Lr2Ruleset;
 pub use timing::TimingMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -21,22 +29,13 @@ pub enum RulesetId {
     Beatoraja,
 }
 
-/// 判定・ゲージのルール。値の正しさはOpenLR2/実機との差分テストで担保する。
+/// 判定・ゲージのルール。実装は `Lr2Ruleset`（OpenLR2 準拠）と `BeatorajaRuleset`（7 鍵）
 pub trait Ruleset {
     fn id(&self) -> RulesetId;
-    /// 押下時刻とノーツ時刻の差(µs, 正=遅い)から判定
-    fn judge(&self, delta_us: i64, judge_rank: i32) -> Option<Judge>;
-    fn gauge_delta(&self, gauge: GaugeType, judge: Judge, total: f64, notes: usize) -> f64;
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GaugeType {
-    AssistEasy,
-    Easy,
-    Groove,
-    Hard,
-    ExHard,
-    Hazard,
+    /// 譜面の `#RANK`（bmson は `judge_rank`）に応じた判定幅
+    fn judge_windows(&self, meta: &ChartMeta, lane: JudgeLane) -> JudgeWindows;
+    /// 譜面の TOTAL とノーツ数から初期状態のゲージを作る。この Ruleset に無い種類は `None`
+    fn gauge(&self, ty: GaugeType, meta: &ChartMeta, notes: usize) -> Option<Gauge>;
 }
 
 /// 描画の「計算」はドメイン：何を・どこに出すかを座標非依存で返す。
@@ -48,8 +47,5 @@ pub struct VisibleNote {
     pub note_index: usize,
 }
 
-pub struct PlayState<R: Ruleset> {
-    pub ruleset: R,
-    pub combo: u32,
-    pub gauge: f64,
-}
+#[cfg(test)]
+mod tests;
