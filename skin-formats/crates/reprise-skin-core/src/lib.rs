@@ -76,7 +76,7 @@ pub enum Custom {
 pub enum CustomChoice {
     /// 条件番号（`Custom::Option` / `Custom::Choice`）
     Option(i32),
-    /// ファイル名（拡張子無し）または `"RANDOM"`
+    /// ファイル名（LR2 csv は拡張子無し、beatoraja は拡張子付き）または `"RANDOM"`（beatoraja は `"Random"`）
     File(String),
 }
 
