@@ -335,6 +335,32 @@ fn core_ln_04_pending_is_shared_per_lane(
     assert_eq!(got, expected);
 }
 
+/// CORE-LN-05: 長さ付き LN
+#[rstest]
+#[case::plain(vec![], vec![long_none(2, 0.0)])]
+#[case::toggle_pending_unaffected(
+    vec![note(1, 0.25, 1, RawObject::LnToggle, 7), note(1, 0.75, 1, RawObject::LnToggle, 8)],
+    vec![long_none(2, 0.0), long_to(1, 0.75, 8)]
+)]
+fn core_ln_05_explicit_long_note(#[case] extra: Vec<Statement>, #[case] expected: Vec<NoteKind>) {
+    let mut ss = vec![Statement::Event(RawEvent::Long {
+        pos: pos(1, 0.0),
+        end: pos(2, 0.0),
+        lane: Lane(1),
+        id: ObjId(5),
+    })];
+    ss.extend(extra);
+    let r = doc(vec![Block::Statements(ss)]).resolve(&mut Script::new(&[]));
+    let got: Vec<NoteKind> = kinds(&r).into_iter().map(|k| k.2).collect();
+    assert_eq!(got, expected);
+}
+fn long_none(m: u32, f: f64) -> NoteKind {
+    NoteKind::Long {
+        end: pos(m, f),
+        end_sound: None,
+    }
+}
+
 // ---- CORE-ORD ---------------------------------------------------------------
 
 /// CORE-ORD-01: 位置順・同位置は文書順
