@@ -23,6 +23,7 @@
 //! | CORE-LN-02 | LN 終端 ID（`#LNOBJ` 相当）の通常ノーツは、同レーン直前の通常ノーツを LN にする |
 //! | CORE-LN-03 | 対にならなかった LN 頭は通常ノーツになり、診断を出す |
 //! | CORE-LN-04 | LN 保留はレーンごとに 1 つで、`LnToggle` と LN 終端 ID が共有する（LR2 互換） |
+//! | CORE-LN-05 | `RawEvent::Long`（長さを持つ記法の LN）はそのまま LN になり、終端音は持たず、LN 保留には関わらない |
 //! | CORE-ORD-01 | 出力イベントは位置順・同位置は文書順（安定ソート） |
 //! | CORE-ORD-02 | `shift_when_note_at_zero` 有効時、位置 0 に可視/不可視ノーツがあれば全体を 1 小節後ろへずらす |
 
@@ -139,6 +140,13 @@ pub enum RawEvent {
         layer: BgaLayer,
         id: ObjId,
     },
+    /// 始点と終点を持つ LN（bmson の `l > 0`）
+    Long {
+        pos: Position,
+        end: Position,
+        lane: Lane,
+        id: ObjId,
+    },
 }
 
 /// 譜面のメタ情報
@@ -154,6 +162,12 @@ pub struct Metadata {
     pub difficulty: Option<i32>,
     pub rank: Option<i32>,
     pub total: Option<f64>,
+    /// 判定幅（100 = 標準の百分率。bmson `judge_rank`）
+    pub judge_rank_percent: Option<f64>,
+    /// ゲージ増加量（100 = 標準の百分率。bmson `total`）
+    pub total_percent: Option<f64>,
+    /// 譜面名（bmson `chart_name`）
+    pub chart_name: String,
     pub stage_file: Option<String>,
     pub banner: Option<String>,
     pub back_bmp: Option<String>,
@@ -173,6 +187,9 @@ pub enum MetaField {
     Difficulty(i32),
     Rank(i32),
     Total(f64),
+    JudgeRankPercent(f64),
+    TotalPercent(f64),
+    ChartName(String),
     StageFile(String),
     Banner(String),
     BackBmp(String),
@@ -538,6 +555,19 @@ impl ChartDocument {
                     },
                     None,
                 ),
+                // CORE-LN-05
+                RawEvent::Long { pos, end, lane, id } => (
+                    Event::Note {
+                        pos,
+                        lane,
+                        kind: NoteKind::Long {
+                            end,
+                            end_sound: None,
+                        },
+                        sound: Some(id),
+                    },
+                    None,
+                ),
             };
             events.push(ev);
             raw_kinds.push(raw);
@@ -661,6 +691,9 @@ fn apply_meta(meta: &mut Metadata, m: MetaField, bpm_precedence: Precedence) {
         MetaField::Difficulty(v) => meta.difficulty = Some(v),
         MetaField::Rank(v) => meta.rank = Some(v),
         MetaField::Total(v) => meta.total = Some(v),
+        MetaField::JudgeRankPercent(v) => meta.judge_rank_percent = Some(v),
+        MetaField::TotalPercent(v) => meta.total_percent = Some(v),
+        MetaField::ChartName(v) => meta.chart_name = v,
         MetaField::StageFile(v) => meta.stage_file = Some(v),
         MetaField::Banner(v) => meta.banner = Some(v),
         MetaField::BackBmp(v) => meta.back_bmp = Some(v),
