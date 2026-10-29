@@ -5,4 +5,4 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-reprise-chart-core = { path = "../reprise-chart-core" }
+reprise-chart-core.workspace = true
