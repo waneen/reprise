@@ -205,3 +205,29 @@ fn adp_ch_08_measure_events(#[case] lengths: Vec<(u32, f64)>, #[case] expected: 
         .collect();
     assert_eq!(load(doc(rc::KeyLayout::Beat7, s)).timing, expected);
 }
+
+/// ADP-CH-09: 音ファイルの解決（書かれた名前 → 拡張子違い ogg/wav/flac/mp3 → 1 つ上のフォルダ、大小無視）
+#[rstest]
+#[case::exact(&["song/a.wav"], "a.wav", Some("song/a.wav"))]
+#[case::case_insensitive(&["song/A.WAV"], "a.wav", Some("song/A.WAV"))]
+#[case::wav_to_ogg(&["song/a.ogg"], "a.wav", Some("song/a.ogg"))]
+#[case::ogg_before_flac(&["song/a.flac", "song/a.ogg"], "a.wav", Some("song/a.ogg"))]
+#[case::no_extension(&["song/a.mp3"], "a", Some("song/a.mp3"))]
+#[case::subdir_backslash(&["song/snd/a.wav"], "snd\\a.wav", Some("song/snd/a.wav"))]
+#[case::parent_dir(&["a.wav"], "a.wav", Some("a.wav"))]
+#[case::missing(&["song/b.wav"], "a.wav", None)]
+fn adp_ch_09_find_sound_file(
+    #[case] files: &[&str],
+    #[case] name: &str,
+    #[case] want: Option<&str>,
+) {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("song")).unwrap();
+    for f in files {
+        let p = tmp.path().join(f);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, b"x").unwrap();
+    }
+    let got = find_sound_file(&tmp.path().join("song"), name);
+    assert_eq!(got, want.map(|w| tmp.path().join(w)));
+}

@@ -12,6 +12,7 @@
 //! | ADP-CH-06 | ノーツ種別・BGM・BGA・音/画像定義・メタ情報をそのまま写す（LN の終端も拍に変換） |
 //! | ADP-CH-07 | `#RANDOM` は注入された `LegacyMt` で引く（`GetRand(n-1)+1`） |
 //! | ADP-CH-08 | 小節長の変化は `TimingEvent::Measure` として小節番号順に出す |
+//! | ADP-CH-09 | 音ファイルの解決（LR2 の `FindAltSound`）: 譜面のフォルダで書かれた名前、無ければ拡張子を ogg → wav → flac → mp3 に替えた名前（名前に既にその拡張子を含むものは飛ばす）、それも無ければ 1 つ上のフォルダの書かれた名前。名前の `\` は区切りとみなし、大小は区別しない |
 use application::ports::{ChartLoader, PortError};
 use domain::{chart::*, random::LegacyMt};
 use md5::{Digest, Md5};
@@ -19,7 +20,7 @@ use reprise_chart_core as rc;
 use reprise_chart_core::{ChartDecoder, DecodeHint, RandomSource};
 use sha2::Sha256;
 use std::collections::BTreeMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// domain の乱数を汎用 crate の trait に適合させる（ADP-CH-07）
 struct LegacyRng<'a>(&'a mut LegacyMt);
@@ -198,6 +199,57 @@ pub fn map_chart(r: rc::ResolvedChart, hash: ChartHash) -> Chart {
             .map(|(k, v)| (ImageId(k.0), v))
             .collect(),
     }
+}
+
+/// フォルダの中から名前を大小無視で探す（同じ表記があればそれを優先）
+fn find_ci(dir: &Path, name: &str) -> Option<PathBuf> {
+    let mut list: Vec<(String, PathBuf)> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
+        .collect();
+    list.sort();
+    list.iter()
+        .find(|(n, _)| n == name)
+        .or_else(|| list.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)))
+        .map(|(_, p)| p.clone())
+}
+
+/// `dir` からの相対パス（`/` か `\` 区切り）を 1 段ずつ大小無視で辿る
+fn find_rel(dir: &Path, rel: &str) -> Option<PathBuf> {
+    let mut cur = dir.to_path_buf();
+    for part in rel
+        .split(['/', '\\'])
+        .filter(|s| !s.is_empty() && *s != ".")
+    {
+        cur = if part == ".." {
+            cur.parent()?.to_path_buf()
+        } else {
+            find_ci(&cur, part)?
+        };
+    }
+    cur.is_file().then_some(cur)
+}
+
+/// 譜面の音ファイルを探す（ADP-CH-09）
+pub fn find_sound_file(chart_dir: &Path, name: &str) -> Option<PathBuf> {
+    if let Some(p) = find_rel(chart_dir, name) {
+        return Some(p);
+    }
+    let lower = name.to_ascii_lowercase();
+    let stem = match name.rfind('.') {
+        Some(i) => &name[..i],
+        None => name,
+    };
+    for ext in ["ogg", "wav", "flac", "mp3"] {
+        if lower.contains(&format!(".{ext}")) {
+            continue;
+        }
+        if let Some(p) = find_rel(chart_dir, &format!("{stem}.{ext}")) {
+            return Some(p);
+        }
+    }
+    find_rel(chart_dir.parent()?, name)
 }
 
 #[cfg(test)]
