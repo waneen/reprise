@@ -73,5 +73,7 @@ jobs:
       - shell: bash
         run: |
           for ws in chart-formats skin-formats game; do
-            (cd "$ws" && cargo fmt --all --check && cargo clippy --workspace --all-targets)
+            (cd "$ws" && cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings)
           done
+      - name: 仕様ルールとテストの 1 対 1 対応
+        run: python3 tools/check_rules.py

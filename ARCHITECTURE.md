@@ -22,16 +22,16 @@ game/reprise (Bevy, Composition Root)
 ## chart-formats/
 | crate | 役割 |
 |---|---|
-| reprise-chart-core | 記法共通の譜面モデル、`ChartDecoder` / `RandomSource` trait、#RANDOM 解決 |
-| reprise-chart-bms | bms/bme/bml/pms デコーダ |
-| reprise-chart-bmson | bmson デコーダ |
+| reprise-chart-core | 記法共通の譜面モデル、`ChartDecoder` / `RandomSource` trait、#RANDOM 解決・定義適用・LN 対応付け（`ResolvePolicy` でプレイヤー差を切替） |
+| reprise-chart-bms | bms/bme/bml/pms デコーダ（実装済み。方言 `Lr2` / `Standard`） |
+| reprise-chart-bmson | bmson デコーダ（未実装） |
 
 ## skin-formats/
 | crate | 役割 |
 |---|---|
 | reprise-skin-core | 記法共通のスキンモデル、`SkinDecoder` / `FileResolver` trait |
-| reprise-skin-lr2csv | LR2 csv (.lr2skin) デコーダ |
-| reprise-skin-beatoraja | beatoraja json/lua デコーダ |
+| reprise-skin-lr2csv | LR2 csv (.lr2skin / .csv) デコーダ（実装済み。方言 `Lr2` / `Standard`） |
+| reprise-skin-beatoraja | beatoraja json/lua デコーダ（未実装） |
 
 方針: 乱数・ファイル選択は trait で注入。タイマー/条件/数値は番号のまま保持し、意味付けは利用側。
 
@@ -40,14 +40,27 @@ game/reprise (Bevy, Composition Root)
 |---|---|
 | domain | 確定譜面・判定/ゲージ(Ruleset)・LR2互換乱数・スコア・スキンモデル |
 | application | ユースケース、ポート（ChartLoader / SkinLoader / ScoreImporter / ScoreRepository / Clock / AudioOutput） |
-| adapters/chart-loader | reprise-chart-core → domain、LegacyMt を RandomSource に適合 |
-| adapters/skin-loader | reprise-skin-core → domain、LR2番号の意味付け |
-| adapters/score-import-* | 他プレイヤーの score.db → ScoreRecord |
+| adapters/chart-loader | reprise-chart-core → domain（小節→拍、MD5/SHA-256）、LegacyMt を RandomSource に適合 |
+| adapters/skin-loader | reprise-skin-core → domain、実ファイル用 `FsResolver`（大小無視・`*` を LegacyMt で乱択） |
+| adapters/score-import-* | 他プレイヤーの score.db → ScoreRecord（未実装） |
 | reprise | Bevy（入力=Controller, 描画=Presenter/View）と組み立て |
 
 ## 記法の追加手順
 1. `chart-formats/crates/`（または `skin-formats/crates/`）に crate を作り `ChartDecoder`（`SkinDecoder`）を実装
 2. `game/crates/reprise/Cargo.toml` に依存を追加し、`src/main.rs` の登録リストに1行追加
 
+## テスト方針
+- 各 crate の `lib.rs` 冒頭に「仕様ルール」表（ID とルール）を置く
+- ルール 1 つにつき rstest のテスト関数 1 つ。関数名はルール ID で始め（例: `BMS-RND-L2-01` → `bms_rnd_l2_01_…`）、`#[case::名前]` でケースを明示する
+- `python3 tools/check_rules.py` が表とテストの 1 対 1 を検査する（CI でも実行）
+- 第三者の素材（LR2 本体・スキン・譜面、OpenLR2 のデータ）は同梱しない。テストの入力はテスト内で組み立てる
+
+## LR2 互換の根拠
+LR2 の挙動は OpenLR2（LR2 の逆コンパイル）を仕様として参照した。方言 `Lr2` で再現している主な癖:
+- BMS: `#RANDOM` は入れ子なし・`#ELSE` 非対応、`#RANDOM` 直後〜最初の `#IF` までの行は捨てる、初期 `#BPM` は先勝ち、未定義 `#BPMxx` 参照は -1、`#TOTAL` は整数、位置 0 にノーツがあると全体を 1 小節ずらす、LN の保留を LNOBJ と共有
+- スキン: 5 バイト以下の行は無視、入れ子 `#IF` の内側は外側が偽でも評価、`#IF` で負値は偽、`#CUSTOMFILE` の RANDOM は 1 回だけ選ぶ
+
+未対応（今後）: bmson、beatoraja スキン、`#SCROLL`・`#LNTYPE 2`・DSC/`#FP`、BGA の動画、他プレイヤーからのスコア取り込み
+
 ## ビルド
-各ディレクトリで `cargo test`（game は兄弟ディレクトリを path 参照するので3つ揃えて配置）
+各ディレクトリで `cargo test`（game は兄弟ディレクトリを path 参照するのでを揃えて配置）
