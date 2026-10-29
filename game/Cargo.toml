@@ -6,3 +6,18 @@ members = ["crates/domain", "crates/application", "crates/adapters/*", "crates/r
 edition = "2021"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+domain = { path = "crates/domain" }
+application = { path = "crates/application" }
+reprise-chart-core = { path = "../chart-formats/crates/reprise-chart-core" }
+reprise-chart-bms = { path = "../chart-formats/crates/reprise-chart-bms" }
+reprise-chart-bmson = { path = "../chart-formats/crates/reprise-chart-bmson" }
+reprise-skin-core = { path = "../skin-formats/crates/reprise-skin-core" }
+reprise-skin-lr2csv = { path = "../skin-formats/crates/reprise-skin-lr2csv" }
+reprise-skin-beatoraja = { path = "../skin-formats/crates/reprise-skin-beatoraja" }
+md5 = { package = "md-5", version = "0.10" }
+sha2 = "0.10"
+rusqlite = { version = "0.41", features = ["bundled"] }
+rstest = "0.28"
+tempfile = "3"

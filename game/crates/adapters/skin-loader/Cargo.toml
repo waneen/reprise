@@ -5,6 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-domain = { path = "../../domain" }
-application = { path = "../../application" }
-reprise-skin-core = { path = "../../../../skin-formats/crates/reprise-skin-core" }
+domain.workspace = true
+application.workspace = true
+reprise-skin-core.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true
+tempfile.workspace = true

@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-domain = { path = "../../domain" }
-application = { path = "../../application" }
-reprise-chart-core = { path = "../../../../chart-formats/crates/reprise-chart-core" }
+domain.workspace = true
+application.workspace = true
+reprise-chart-core.workspace = true
+md5.workspace = true
+sha2.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true

@@ -5,4 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-domain = { path = "../domain" }
+domain.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true

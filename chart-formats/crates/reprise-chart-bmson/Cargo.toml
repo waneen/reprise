@@ -6,3 +6,7 @@ license.workspace = true
 
 [dependencies]
 reprise-chart-core.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+rstest.workspace = true

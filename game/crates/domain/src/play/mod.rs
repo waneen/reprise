@@ -1,6 +1,9 @@
 //! プレイ中のルール：判定・ゲージ・ノーツ位置計算。
 //! LR2 / beatoraja でルールが違うので Ruleset をドメインの戦略として持つ。
-use crate::chart::{Beat, Chart, Lane};
+use crate::chart::Lane;
+
+mod timing;
+pub use timing::TimingMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Judge {
@@ -34,17 +37,6 @@ pub enum GaugeType {
     Hard,
     ExHard,
     Hazard,
-}
-
-/// 時刻(µs)→拍、拍→時刻の変換（BPM変化・STOP込み）
-pub struct TimingMap {/* 区間テーブル */}
-impl TimingMap {
-    pub fn from_chart(_c: &Chart) -> Self {
-        TimingMap {}
-    }
-    pub fn time_of(&self, _b: Beat) -> i64 {
-        todo!()
-    }
 }
 
 /// 描画の「計算」はドメイン：何を・どこに出すかを座標非依存で返す。

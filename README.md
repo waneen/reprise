@@ -19,6 +19,8 @@ cd game && cargo run -p reprise
 ```
 各 workspace で `cargo test`。CI は Linux / Windows / macOS でテストし、aarch64・x86_64 の各ターゲットをビルドします。`v*` タグで6ターゲットのバイナリを Release に添付します。
 
+テストは rstest で「仕様ルール 1 つ = テスト関数 1 つ」に揃えています（[ARCHITECTURE.md](ARCHITECTURE.md#テスト方針)）。対応は `python3 tools/check_rules.py` で検査できます。
+
 LR2互換乱数を OpenLR2 の対応表と全件照合する場合（任意）:
 ```sh
 cd game && OPENLR2_SEEDMAP7K=/path/to/Unrandomizer_SeedMap7K.h cargo test -p domain -- --ignored
