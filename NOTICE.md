@@ -12,11 +12,14 @@ MIT OR Apache-2.0（LICENSE-MIT / LICENSE-APACHE）。
 - **DxLib**（山田 巧）: LR2 が使用していた乱数 API の挙動を互換対象として参照。コードは含みません。
 
 ## 依存ライブラリ
-実行時に使う外部 crate は MIT / Apache-2.0 などの寛容なライセンスのみです（`cargo metadata` で確認）。
+実行時に使う外部 crate は MIT / Apache-2.0 などの寛容なライセンスが中心です（`cargo metadata` で確認）。バイナリを配布する際は各依存のライセンス表示を同梱すること。
 - **encoding_rs**: `(Apache-2.0 OR MIT) AND BSD-3-Clause`。バイナリを配布する際は BSD-3-Clause の著作権表示を同梱すること
 - **md-5 / sha2**（RustCrypto）: MIT OR Apache-2.0
 - **serde_json**: MIT OR Apache-2.0
 - **rusqlite / libsqlite3-sys**: MIT。同梱してビルドする **SQLite** 本体はパブリックドメイン
+- **Bevy**: MIT OR Apache-2.0。既定フォントとして **Fira Mono**（SIL Open Font License 1.1）をバイナリに含む
+- **rodio**: MIT OR Apache-2.0。mp3 の読み込みに使う **symphonia** は MPL-2.0（改変せずに使用。ソースは crates.io で入手可能）
+- BSD-3-Clause・ISC・BSL-1.0・Zlib などの寛容なライセンスの間接依存を含む
 - その他の間接依存（hashbrown, foldhash（Zlib）, memchr（Unlicense OR MIT）など）も寛容なライセンス
 - テスト専用: rstest, tempfile（MIT OR Apache-2.0）
 

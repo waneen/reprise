@@ -39,12 +39,12 @@ game/reprise (Bevy, Composition Root)
 | crate | 役割 |
 |---|---|
 | domain | 確定譜面・拍⇄時刻（TimingMap）・判定/ゲージ(Ruleset)・LR2互換乱数・スコア・スキンモデル |
-| application | ユースケース、ポート（ChartLoader / SkinLoader / ScoreImporter / ScoreRepository / Clock / AudioOutput） |
-| adapters/chart-loader | reprise-chart-core → domain（小節→拍、MD5/SHA-256）、LegacyMt を RandomSource に適合 |
+| application | ユースケース（譜面読み込み・記録取り込み・プレイ: 入力→フレームのレーン状態、音の出力、描画位置）、ポート（ChartLoader / SkinLoader / ScoreImporter / ScoreRepository / Clock / AudioOutput） |
+| adapters/chart-loader | reprise-chart-core → domain（小節→拍、MD5/SHA-256）、LegacyMt を RandomSource に適合、音ファイルの解決（LR2 の拡張子違いの探し方） |
 | adapters/skin-loader | reprise-skin-core → domain、実ファイル用 `FsResolver`（大小無視・`*` を LegacyMt で乱択） |
 | adapters/score-import-lr2 | LR2 のスコア DB（sqlite）→ ScoreRecord |
 | adapters/score-import-beatoraja | beatoraja / LR2oraja の score.db（sqlite）→ ScoreRecord（MD5 は songdata.db で引く） |
-| reprise | Bevy（入力=Controller, 描画=Presenter/View）と組み立て |
+| reprise | Bevy（入力=Controller, 描画=Presenter/View）と組み立て。いまは四角形で描く最小のプレイ画面（1 ループ = 1 フレームで入力を読み、垂直同期なしで回す） |
 
 ## 記法の追加手順
 1. `chart-formats/crates/`（または `skin-formats/crates/`）に crate を作り `ChartDecoder`（`SkinDecoder`）を実装
@@ -66,11 +66,12 @@ LR2 の挙動は OpenLR2（LR2 の逆コンパイル）を仕様として参照�
 - BMS: `#RANDOM` は入れ子なし・`#ELSE` 非対応、`#RANDOM` 直後〜最初の `#IF` までの行は捨てる、初期 `#BPM` は先勝ち、未定義 `#BPMxx` 参照は -1、`#TOTAL` は整数、位置 0 にノーツがあると全体を 1 小節ずらす、LN の保留を LNOBJ と共有
 - スキン: 5 バイト以下の行は無視、入れ子 `#IF` の内側は外側が偽でも評価、`#IF` で負値は偽、`#CUSTOMFILE` の RANDOM は 1 回だけ選ぶ
 - 判定・ゲージ（`Lr2Ruleset`）: `#RANK` 別の判定幅、TOTAL の整数化と既定式、HARD のダメージ係数（OpenLR2 自身も要確認としている式）、HP 30% 以下の被ダメージ × 0.6、GROOVE/EASY の 2% 下限
-- プレイ進行（`Lr2Play`）: フレーム単位の処理（フレーム時刻の整数 ms で判定、レーン番号順、1 レーン 1 フレームにつき先頭ノーツ 1 つ）、BD の押下が次のノーツも巻き込む、LN の始点は GD を過ぎると見逃し、LN を終端の GD 幅より前に離すと BAD、地雷は GR 幅未満の押下か押しながらの通過で発動し POOR に数える、ゲージ 2% 未満で途中終了。フレームの間隔は PC ごとに違うので再現対象外（BPM 変化直後の時刻補正も未対応）
+- プレイ進行（`Lr2Play`）: キー音（最後に片付いたノーツの音、不可視ノーツで差し替え）、BGM・不可視ノーツをレーンより先に処理、フレーム単位の処理（フレーム時刻の整数 ms で判定、レーン番号順、1 レーン 1 フレームにつき先頭ノーツ 1 つ）、BD の押下が次のノーツも巻き込む、LN の始点は GD を過ぎると見逃し、LN を終端の GD 幅より前に離すと BAD、地雷は GR 幅未満の押下か押しながらの通過で発動し POOR に数える、ゲージ 2% 未満で途中終了。フレームの間隔は PC ごとに違うので再現対象外（BPM 変化直後の時刻補正も未対応）
 
 beatoraja の判定・ゲージ（`BeatorajaRuleset`）は beatoraja の 7 鍵ルール（`JudgeProperty`・`GaugeProperty` の SEVENKEYS）を仕様として参照した。
 
-未対応（今後）: beatoraja の Lua スキン、`#SCROLL`・`#LNTYPE 2`・DSC/`#FP`、BGA の動画、bmson の `c`（続きから鳴らす）、判定・ゲージのうち段位（コース）ゲージ・LR2 の NONSTOP 判定幅・ロングノーツ終端の判定幅・beatoraja の 5 鍵/PMS/24 鍵ルールと `#DEFEXRANK`、beatoraja のプレイ進行（判定するノーツの選び方・LN の種類・ランプ）、描画（Bevy）
+未対応（今後）: beatoraja の Lua スキン、`#SCROLL`・`#LNTYPE 2`・DSC/`#FP`、BGA の動画、bmson の `c`（続きから鳴らす）、判定・ゲージのうち段位（コース）ゲージ・LR2 の NONSTOP 判定幅・ロングノーツ終端の判定幅・beatoraja の 5 鍵/PMS/24 鍵ルールと `#DEFEXRANK`、beatoraja のプレイ進行（判定するノーツの選び方・LN の種類・ランプ）、プレイ画面のスキン描画・ハイスピード・キー設定・ゲームパッド・2P/DP/9 鍵・LN 終端の音・BGA
 
 ## ビルド
-各ディレクトリで `cargo test`（game は兄弟ディレクトリを path 参照するので3つ揃えて配置）
+各ディレクトリで `cargo test`（game は兄弟ディレクトリを path 参照するので3つ揃えて配置）。
+CI はテストと lint だけ。クロスビルドは手元で `bash tools/cross-build.sh <target>`

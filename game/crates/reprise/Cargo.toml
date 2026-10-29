@@ -15,4 +15,17 @@ reprise-chart-bms.workspace = true
 reprise-chart-bmson.workspace = true
 reprise-skin-lr2csv.workspace = true
 reprise-skin-beatoraja.workspace = true
-# bevy = "..."  ← Bevy に依存するのはこの crate だけ
+# Bevy に依存するのはこの crate だけ
+bevy = { version = "0.19.1", default-features = false, features = [
+    "default_app",
+    "default_platform",
+    "2d_bevy_render",
+    "ui_bevy_render",
+    "bevy_audio",
+    "wav",
+    "vorbis",
+    "mp3",
+    "flac",
+] }
+# 読めない音を事前にはじくため（Bevy と同じ版。形式は Bevy の features で有効になる）
+rodio = { version = "0.22", default-features = false }
