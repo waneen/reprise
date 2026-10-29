@@ -234,7 +234,10 @@ pub struct Diagnostic {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SkinError {
-    Io { path: PathBuf, message: String },
+    Io {
+        path: PathBuf,
+        message: String,
+    },
     NotASkin(PathBuf),
     /// 記法として読めない（行番号は分かる範囲で）
     Syntax {
