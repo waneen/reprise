@@ -63,4 +63,4 @@ LR2 の挙動は OpenLR2（LR2 の逆コンパイル）を仕様として参照�
 未対応（今後）: bmson、beatoraja スキン、`#SCROLL`・`#LNTYPE 2`・DSC/`#FP`、BGA の動画、他プレイヤーからのスコア取り込み
 
 ## ビルド
-各ディレクトリで `cargo test`（game は兄弟ディレクトリを path 参照するのでを揃えて配置）
+各ディレクトリで `cargo test`（game は兄弟ディレクトリを path 参照するので3つ揃えて配置）
