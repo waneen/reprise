@@ -126,6 +126,8 @@ pub struct SkinDocument {
     pub elements: Vec<Element>,
     pub directives: Vec<Directive>,
     pub diagnostics: Vec<Diagnostic>,
+    /// 読み込み終了時点で真の条件（スキン設定の選択などを含む。描画時の条件判定にも使う）
+    pub options: BTreeSet<i32>,
 }
 
 /// 描画要素（SRC 1 行 + DST 複数行）
@@ -143,6 +145,10 @@ pub struct Element {
     pub conditions: Vec<ConditionRef>,
     /// ループ開始時刻（最初の DST）
     pub looping: Option<i32>,
+    /// 最初の DST の条件以外の引数（LR2 の DST 第 21, 22 引数。第 21 引数 1/2 は 1P/2P の皿の角度で回す）
+    pub dst_extra: [i32; 2],
+    /// 描画順（小さいほど奥。同じなら `elements` の並び順）。LR2 は最初の DST 行の行番号（`#IF` で飛ばした行は数えない）
+    pub order: u32,
     pub keyframes: Vec<Keyframe>,
 }
 
