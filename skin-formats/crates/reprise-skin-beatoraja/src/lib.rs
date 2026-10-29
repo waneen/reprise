@@ -1,4 +1,4 @@
-//! beatoraja JSON / Lua スキン（Luaは feature で mlua を有効化する想定）。
+//! beatoraja JSON / Lua スキン。未実装（`decode` は `SkinError::NotASkin` を返す）。
 use reprise_skin_core::*;
 use std::path::Path;
 
@@ -11,15 +11,15 @@ impl SkinDecoder for BeatorajaJsonDecoder {
         p.extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("json"))
     }
-    fn read_header(&self, _p: &Path) -> Result<SkinHeader, SkinError> {
-        Err(SkinError::Unsupported("TODO".into()))
+    fn read_header(&self, p: &Path, _f: &mut dyn FileResolver) -> Result<SkinHeader, SkinError> {
+        Err(SkinError::NotASkin(p.to_path_buf()))
     }
     fn decode(
         &self,
-        _p: &Path,
+        p: &Path,
         _s: &SkinSettings,
         _f: &mut dyn FileResolver,
     ) -> Result<SkinDocument, SkinError> {
-        Err(SkinError::Unsupported("TODO".into()))
+        Err(SkinError::NotASkin(p.to_path_buf()))
     }
 }

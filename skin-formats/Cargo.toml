@@ -6,3 +6,8 @@ members = ["crates/*"]
 edition = "2021"
 version = "0.1.0"
 license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+reprise-skin-core = { path = "crates/reprise-skin-core" }
+encoding_rs = "0.8"
+rstest = "0.28"
