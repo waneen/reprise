@@ -55,7 +55,15 @@ pub enum Custom {
         start_op: i32,
         labels: Vec<String>,
     },
-    /// パターン中の `*` を選んだファイル名（拡張子無し）で置き換える
+    /// 選択肢ごとに条件番号を持つ（beatoraja `property`）。選んだ項目の条件が真になる
+    Choice {
+        name: String,
+        /// (表示名, 条件番号)
+        items: Vec<(String, i32)>,
+        /// 既定の項目名
+        default: Option<String>,
+    },
+    /// パターン中の `*` を選んだファイル名で置き換える（拡張子の扱いは記法による）
     File {
         name: String,
         pattern: String,
@@ -66,7 +74,7 @@ pub enum Custom {
 /// 利用者の選択
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CustomChoice {
-    /// 条件番号
+    /// 条件番号（`Custom::Option` / `Custom::Choice`）
     Option(i32),
     /// ファイル名（拡張子無し）または `"RANDOM"`
     File(String),
@@ -98,6 +106,8 @@ pub enum FontEntry {
         kind: i32,
     },
     Bitmap(PathBuf),
+    /// フォントファイル（TTF やビットマップ等。種類の判別は利用側）
+    File(PathBuf),
     Missing(String),
 }
 
@@ -226,6 +236,12 @@ pub struct Diagnostic {
 pub enum SkinError {
     Io { path: PathBuf, message: String },
     NotASkin(PathBuf),
+    /// 記法として読めない（行番号は分かる範囲で）
+    Syntax {
+        path: PathBuf,
+        line: usize,
+        message: String,
+    },
 }
 
 /// ファイルの探索と読み込み（利用側が実装する）
