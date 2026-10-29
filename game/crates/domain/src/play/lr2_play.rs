@@ -2,13 +2,14 @@
 //! OpenLR2 の `Scene04_Play.cpp`（`ProcGame` のフレーム処理・`ProcNoteOnTiming`・`ProcSinglenote`・
 //! `ProcLongnote`・`ApplyJudgeNote`・`ApplyJudgeMine`）、`LR2_bmsload.cpp`（レーンへの配置）、
 //! `LR2_statplay.cpp`（`CheckClear`）を仕様として参照した（コードは転載していない）。
+//! BGM・不可視ノーツは `ProcGame` のオブジェクト処理、キー音は `noteVal` の扱いに従う。
 //! BPM 変化直後の時刻補正（`bpmChangedRealtime`）は未対応。
 use super::{
     lr2::{Lr2Gauge, Lr2Ruleset},
     GaugeType, Judge, JudgeLane, Ruleset,
 };
 use super::{RulesetId, TimingMap};
-use crate::chart::{Chart, ChartHash, Lane, NoteKind};
+use crate::chart::{Beat, Chart, ChartHash, Lane, NoteKind, SoundId};
 use crate::score::{ClearLamp, ScoreOrigin, ScoreRecord};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -26,6 +27,9 @@ struct LaneNote {
     /// 時刻（ms。LR2 と同じく小数を持つ）
     time: f64,
     kind: Kind,
+    beat: Beat,
+    end_beat: Option<Beat>,
+    sound: Option<SoundId>,
 }
 
 #[derive(Debug, Default)]
@@ -33,6 +37,28 @@ struct LaneState {
     notes: VecDeque<LaneNote>,
     /// 押下中の LN の始点判定と差（ms）
     active: Option<(Judge, i64)>,
+    /// 押したときに鳴らすキー音（LR2 の `noteVal`）
+    sound: Option<SoundId>,
+}
+
+/// 時刻順に処理するオブジェクト（BGM と不可視ノーツ）
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Object {
+    Bgm(SoundId),
+    /// レーンのキー音を差し替える
+    Invisible(Lane, Option<SoundId>),
+}
+
+/// 描画用のまだ片付いていないノーツ
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PendingNote {
+    pub lane: Lane,
+    pub beat: Beat,
+    /// LN の終端
+    pub end_beat: Option<Beat>,
+    pub mine: bool,
+    /// LN を押している最中
+    pub held: bool,
 }
 
 /// そのフレームでの鍵盤の状態
@@ -59,6 +85,10 @@ pub enum PlayEvent {
     },
     /// 地雷の発動
     Mine { lane: Lane, damage: u32 },
+    /// 押下で鳴らすキー音
+    Keysound { lane: Lane, sound: SoundId },
+    /// BGM
+    Bgm { sound: SoundId },
 }
 
 /// 判定の数。空POOR と地雷も POOR に数える
@@ -79,6 +109,8 @@ impl JudgeCounts {
 
 pub struct Lr2Play {
     lanes: BTreeMap<Lane, LaneState>,
+    /// (時刻 ms, オブジェクト)。時刻順
+    objects: VecDeque<(f64, Object)>,
     /// PG, GR, GD, BD（ms）
     windows: [i64; 4],
     gauge_type: GaugeType,
@@ -94,28 +126,38 @@ pub struct Lr2Play {
 /// 空POOR になる早押しの上限（ms 未満）
 const EMPTY_POOR_MS: i64 = 1000;
 
-/// 譜面の音符を LR2 の規則でレーンに並べる（DOM-LRP-01）
+/// 拍の時刻（ms）
+fn ms(timing: &TimingMap, b: Beat) -> f64 {
+    timing.time_of(b) as f64 / 1000.0
+}
+
+/// 譜面の音符を LR2 の規則でレーンに並べる（DOM-LRP-01）。不可視ノーツは除く
 fn build_lanes(chart: &Chart, timing: &TimingMap) -> BTreeMap<Lane, LaneState> {
-    let ms = |b| timing.time_of(b) as f64 / 1000.0;
     let mut sorted: Vec<(f64, usize)> = chart
         .notes
         .iter()
         .enumerate()
         .filter(|(_, n)| !matches!(n.kind, NoteKind::Invisible))
-        .map(|(i, n)| (ms(n.beat), i))
+        .map(|(i, n)| (ms(timing, n.beat), i))
         .collect();
     sorted.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
     let mut lanes: BTreeMap<Lane, LaneState> = BTreeMap::new();
     for (time, i) in sorted {
         let n = &chart.notes[i];
-        let kind = match &n.kind {
-            NoteKind::Normal => Kind::Normal,
-            NoteKind::Long { end, .. } => Kind::Long(ms(*end)),
-            NoteKind::Mine { damage_raw } => Kind::Mine(*damage_raw),
+        let (kind, end_beat) = match &n.kind {
+            NoteKind::Normal => (Kind::Normal, None),
+            NoteKind::Long { end, .. } => (Kind::Long(ms(timing, *end)), Some(*end)),
+            NoteKind::Mine { damage_raw } => (Kind::Mine(*damage_raw), None),
             NoteKind::Invisible => unreachable!(),
         };
         let q = &mut lanes.entry(n.lane).or_default().notes;
-        let note = LaneNote { time, kind };
+        let note = LaneNote {
+            time,
+            kind,
+            beat: n.beat,
+            end_beat,
+            sound: n.sound,
+        };
         match q.back() {
             None => q.push_back(note),
             Some(prev) => {
@@ -135,7 +177,31 @@ fn build_lanes(chart: &Chart, timing: &TimingMap) -> BTreeMap<Lane, LaneState> {
             }
         }
     }
+    // キー音の初期値はレーンの最初のノーツの音
+    for st in lanes.values_mut() {
+        st.sound = st.notes.front().and_then(|n| n.sound);
+    }
     lanes
+}
+
+/// BGM と不可視ノーツを時刻順に並べる（同時刻は記述順）（DOM-LRP-13）
+fn build_objects(chart: &Chart, timing: &TimingMap) -> VecDeque<(f64, Object)> {
+    let mut v: Vec<(f64, usize, Object)> = chart
+        .bgm
+        .iter()
+        .map(|(b, s)| (ms(timing, *b), Object::Bgm(*s)))
+        .chain(
+            chart
+                .notes
+                .iter()
+                .filter(|n| matches!(n.kind, NoteKind::Invisible))
+                .map(|n| (ms(timing, n.beat), Object::Invisible(n.lane, n.sound))),
+        )
+        .enumerate()
+        .map(|(i, (t, o))| (t, i, o))
+        .collect();
+    v.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+    v.into_iter().map(|(t, _, o)| (t, o)).collect()
 }
 
 impl Lr2Play {
@@ -151,6 +217,7 @@ impl Lr2Play {
         let w = Lr2Ruleset.judge_windows(&chart.meta, JudgeLane::Key);
         Some(Self {
             lanes,
+            objects: build_objects(chart, timing),
             windows: w.grades.map(|g| g.late / 1000),
             gauge_type,
             gauge,
@@ -229,10 +296,26 @@ impl Lr2Play {
         if self.dead {
             return out;
         }
+        // 時刻を過ぎたオブジェクト（BGM・不可視ノーツ）を先に処理する
+        while let Some(&(time, obj)) = self.objects.front() {
+            if time >= t_ms as f64 {
+                break;
+            }
+            self.objects.pop_front();
+            match obj {
+                Object::Bgm(sound) => out.push(PlayEvent::Bgm { sound }),
+                Object::Invisible(lane, sound) => {
+                    if let Some(st) = self.lanes.get_mut(&lane) {
+                        st.sound = sound;
+                    }
+                }
+            }
+        }
         let lanes: Vec<Lane> = self.lanes.keys().copied().collect();
         for lane in lanes {
             let key = keys(lane);
             match self.lanes[&lane].notes.front().map(|n| n.kind) {
+                None if key == KeyState::Pressed => self.keysound(lane, None, &mut out),
                 None => {}
                 Some(Kind::Long(end)) => self.proc_long(lane, key, t_ms, end, &mut out),
                 Some(_) => self.proc_single(lane, key, t_ms, &mut out),
@@ -283,6 +366,38 @@ impl Lr2Play {
         self.lanes.get_mut(&lane).unwrap().notes.pop_front();
     }
 
+    /// キー音（DOM-LRP-12）。`note` が Some ならレーンのキー音をそのノーツの音にしてから鳴らす
+    fn keysound(&mut self, lane: Lane, note: Option<LaneNote>, out: &mut Vec<PlayEvent>) {
+        let st = self.lanes.get_mut(&lane).unwrap();
+        if let Some(n) = note {
+            st.sound = n.sound;
+        }
+        if let Some(sound) = st.sound {
+            out.push(PlayEvent::Keysound { lane, sound });
+        }
+    }
+
+    /// 見逃したノーツの音をレーンのキー音にする（鳴らさない）
+    fn set_sound(&mut self, lane: Lane, n: LaneNote) {
+        self.lanes.get_mut(&lane).unwrap().sound = n.sound;
+    }
+
+    /// 描画用に、まだ片付いていないノーツ（地雷を含む）をレーン順・時刻順に返す
+    pub fn pending_notes(&self) -> Vec<PendingNote> {
+        self.lanes
+            .iter()
+            .flat_map(|(lane, st)| {
+                st.notes.iter().enumerate().map(move |(i, n)| PendingNote {
+                    lane: *lane,
+                    beat: n.beat,
+                    end_beat: n.end_beat,
+                    mine: matches!(n.kind, Kind::Mine(_)),
+                    held: i == 0 && st.active.is_some(),
+                })
+            })
+            .collect()
+    }
+
     /// 通常ノーツ・地雷（DOM-LRP-02..04, 06）
     fn proc_single(&mut self, lane: Lane, key: KeyState, t: i64, out: &mut Vec<PlayEvent>) {
         let Some(n) = self.lanes[&lane].notes.front().copied() else {
@@ -307,6 +422,7 @@ impl Lr2Play {
         }
         if tf - n.time > self.windows[3] as f64 {
             self.pop(lane);
+            self.set_sound(lane, n);
             self.score(lane, Judge::Poor, None, out);
             return;
         }
@@ -317,6 +433,7 @@ impl Lr2Play {
         match self.grade(offset.abs()) {
             Some(j) => {
                 self.pop(lane);
+                self.keysound(lane, Some(n), out);
                 self.score(lane, j, Some(offset), out);
                 let bd = self.windows[3];
                 let chain = self.lanes[&lane]
@@ -328,9 +445,10 @@ impl Lr2Play {
                 }
             }
             None if (n.time as i64) - t < EMPTY_POOR_MS => {
+                self.keysound(lane, Some(n), out);
                 self.score(lane, Judge::EmptyPoor, Some(offset), out)
             }
-            None => {}
+            None => self.keysound(lane, None, out),
         }
     }
 
@@ -341,6 +459,7 @@ impl Lr2Play {
         let gd = self.windows[2];
         if t as f64 - n.time > gd as f64 && active.is_none() {
             self.pop(lane);
+            self.set_sound(lane, n);
             self.score(lane, Judge::Poor, None, out);
             return;
         }
@@ -348,11 +467,15 @@ impl Lr2Play {
             (KeyState::Pressed, _) => {
                 let offset = t - n.time as i64;
                 match self.grade(offset.abs()) {
-                    Some(j) => self.lanes.get_mut(&lane).unwrap().active = Some((j, offset)),
+                    Some(j) => {
+                        self.lanes.get_mut(&lane).unwrap().active = Some((j, offset));
+                        self.keysound(lane, Some(n), out);
+                    }
                     None if (n.time as i64) - t < EMPTY_POOR_MS => {
+                        self.keysound(lane, Some(n), out);
                         self.score(lane, Judge::EmptyPoor, Some(offset), out)
                     }
-                    None => {}
+                    None => self.keysound(lane, None, out),
                 }
             }
             (KeyState::Held, Some((j, d))) if (end as i64) < t => {
@@ -699,6 +822,88 @@ mod tests {
                 PlayEvent::Judge { lane, judge, .. } => Some((lane.0, *judge)),
                 _ => None,
             })
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    fn snd(lane: u8, ms: i64, kind: NoteKind, s: u32) -> Note {
+        Note {
+            sound: Some(SoundId(s)),
+            ..note_at(lane, ms as f64, kind)
+        }
+    }
+    fn sounds(ev: &[PlayEvent]) -> Vec<String> {
+        ev.iter()
+            .filter_map(|e| match e {
+                PlayEvent::Keysound { lane, sound } => Some(format!("k{}:{}", lane.0, sound.0)),
+                PlayEvent::Bgm { sound } => Some(format!("b:{}", sound.0)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// DOM-LRP-12: キー音。レーンのキー音は最初のノーツの音で始まり、片付いたノーツ（見逃しを含む）の音に替わる。
+    /// 押したとき、判定（空POOR を含む）したノーツがあればその音、無ければレーンのキー音を鳴らす。地雷・離し・見逃しでは鳴らさない
+    #[rstest]
+    #[case::hit_plays_note(vec![snd(1, 1000, NoteKind::Normal, 5)], &[p(1000)], vec!["k1:5"])]
+    #[case::too_early_plays_lane_sound(vec![snd(1, 2000, NoteKind::Normal, 5)], &[p(0)], vec!["k1:5"])]
+    #[case::empty_poor_plays_note(vec![snd(1, 1000, NoteKind::Normal, 5)], &[p(500)], vec!["k1:5"])]
+    #[case::after_hit_lane_keeps(vec![snd(1, 1000, NoteKind::Normal, 5), snd(1, 5000, NoteKind::Normal, 6)], &[p(1000), r(1001), p(2000)], vec!["k1:5", "k1:5"])]
+    #[case::miss_switches_silently(vec![snd(1, 1000, NoteKind::Normal, 5), snd(1, 1100, NoteKind::Normal, 6), snd(1, 9000, NoteKind::Normal, 7)], &[o(1301), o(1400), p(2000)], vec!["k1:6"])]
+    #[case::exhausted_lane(vec![snd(1, 1000, NoteKind::Normal, 5)], &[p(1000), r(1001), p(3000)], vec!["k1:5", "k1:5"])]
+    #[case::ln_head(vec![Note { sound: Some(SoundId(8)), ..ln(1000, 2000) }], &[p(1000), r(2500)], vec!["k1:8"])]
+    #[case::bd_chain_both(vec![snd(1, 1000, NoteKind::Normal, 5), snd(1, 1150, NoteKind::Normal, 6)], &[p(1200)], vec!["k1:5", "k1:6"])]
+    #[case::mine_silent(vec![mine(1000, 1)], &[p(1000)], vec![])]
+    fn dom_lrp_12_keysound(
+        #[case] notes: Vec<Note>,
+        #[case] frames: &[Frame],
+        #[case] want: Vec<&str>,
+    ) {
+        let (_, ev) = run(notes, frames);
+        assert_eq!(sounds(&ev), want);
+    }
+
+    /// DOM-LRP-13: BGM と不可視ノーツはフレーム時刻より前（未満）になったフレームで、レーンより先に時刻順に処理する。
+    /// BGM は鳴らし、不可視ノーツはそのレーンのキー音を差し替える
+    #[rstest]
+    #[case::bgm_strictly_before(vec![], vec![(1000, 3)], &[o(1000), o(1001)], vec!["b:3"])]
+    #[case::bgm_in_time_order(vec![], vec![(2000, 4), (1000, 3)], &[o(5000)], vec!["b:3", "b:4"])]
+    #[case::invisible_switches_sound(vec![snd(1, 9000, NoteKind::Normal, 5), snd(1, 1000, NoteKind::Invisible, 9)], vec![], &[o(1001), p(1002)], vec!["k1:9"])]
+    #[case::before_lanes_same_frame(vec![snd(1, 9000, NoteKind::Normal, 5), snd(1, 1000, NoteKind::Invisible, 9)], vec![], &[p(1001)], vec!["k1:9"])]
+    fn dom_lrp_13_objects(
+        #[case] notes: Vec<Note>,
+        #[case] bgm: Vec<(i64, u32)>,
+        #[case] frames: &[Frame],
+        #[case] want: Vec<&str>,
+    ) {
+        let mut c = chart(notes, None);
+        c.bgm = bgm
+            .iter()
+            .map(|&(ms, s)| (Beat(ms as f64 / 1000.0), SoundId(s)))
+            .collect();
+        let mut play = Lr2Play::new(&c, &TimingMap::from_chart(&c), GaugeType::Groove).unwrap();
+        let mut ev = vec![];
+        for &(t, k1, _) in frames {
+            ev.extend(play.tick(t, |l| if l.0 == 1 { k1 } else { Off }));
+        }
+        assert_eq!(sounds(&ev), want);
+    }
+
+    /// DOM-LRP-14: 描画用のノーツは、まだ片付いていないもの（地雷を含む）をレーン順・時刻順に、押下中の LN は押下中として返す
+    #[rstest]
+    #[case::all_pending(vec![n2(1000), n(2000), mine(3000, 1)], &[], vec![(1, 2.0, false, false), (1, 3.0, true, false), (2, 1.0, false, false)])]
+    #[case::judged_removed(vec![n(1000), n(2000)], &[p(1000)], vec![(1, 2.0, false, false)])]
+    #[case::held_ln(vec![ln(1000, 2000)], &[p(1000)], vec![(1, 1.0, false, true)])]
+    fn dom_lrp_14_pending(
+        #[case] notes: Vec<Note>,
+        #[case] frames: &[Frame],
+        #[case] want: Vec<(u8, f64, bool, bool)>,
+    ) {
+        let (play, _) = run(notes, frames);
+        let got: Vec<(u8, f64, bool, bool)> = play
+            .pending_notes()
+            .iter()
+            .map(|n| (n.lane.0, n.beat.0, n.mine, n.held))
             .collect();
         assert_eq!(got, want);
     }
