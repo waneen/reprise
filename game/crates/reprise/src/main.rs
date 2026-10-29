@@ -25,7 +25,8 @@ fn main() {
     ];
     let importers: Vec<Box<dyn ScoreImporter>> = vec![
         Box::new(score_import_lr2::Lr2ScoreDb),
-        Box::new(score_import_beatoraja::BeatorajaScoreDb),
+        Box::new(score_import_beatoraja::BeatorajaScoreDb::beatoraja()),
+        Box::new(score_import_beatoraja::BeatorajaScoreDb::lr2oraja()),
     ];
     println!(
         "chart loaders: {}, skin loaders: {}, importers: {}",

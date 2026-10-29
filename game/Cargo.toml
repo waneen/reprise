@@ -18,5 +18,6 @@ reprise-skin-lr2csv = { path = "../skin-formats/crates/reprise-skin-lr2csv" }
 reprise-skin-beatoraja = { path = "../skin-formats/crates/reprise-skin-beatoraja" }
 md5 = { package = "md-5", version = "0.10" }
 sha2 = "0.10"
+rusqlite = { version = "0.41", features = ["bundled"] }
 rstest = "0.28"
 tempfile = "3"
