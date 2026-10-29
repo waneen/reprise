@@ -29,3 +29,5 @@ bevy = { version = "0.19.1", default-features = false, features = [
 ] }
 # 読めない音を事前にはじくため（Bevy と同じ版。形式は Bevy の features で有効になる）
 rodio = { version = "0.22", default-features = false }
+# スキン画像の読み込み（抜き色を自前で処理するため）
+image = { version = "0.25", default-features = false, features = ["png", "bmp", "jpeg", "gif", "tga"] }

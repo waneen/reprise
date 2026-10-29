@@ -263,6 +263,24 @@ fn skn_opt_01_initial_options(
     assert_eq!(directives(&d).contains(&"HIT".to_string()), expected);
 }
 
+/// SKN-OPT-02: 文書の options は読み込み終了時点で真の条件
+#[rstest]
+#[case::custom_choice("", 901, true)]
+#[case::other_choice_false("", 900, false)]
+#[case::setoption_on("#SETOPTION,950,1\n", 950, true)]
+#[case::setoption_off("#SETOPTION,901,0\n", 901, false)]
+fn skn_opt_02_final_options(#[case] body: &str, #[case] probe: i32, #[case] expected: bool) {
+    let mut s = SkinSettings::default();
+    s.custom.insert(0, CustomChoice::Option(901));
+    let d = decode_full(
+        Dialect::Lr2,
+        &format!("{INFO}#CUSTOMOPTION,A,900,x,y\n{body}"),
+        &[],
+        &s,
+    );
+    assert_eq!(d.options.contains(&probe), expected);
+}
+
 /// SKN-IF-01: すべて真で真
 #[rstest]
 #[case::single_true(Dialect::Lr2, "#IF,10", true)]
@@ -498,20 +516,22 @@ fn skn_dst_01_attach_to_src(#[case] body: String, #[case] keyframes: Vec<usize>)
 /// SKN-DST-02: 最初の DST の属性
 #[rstest]
 #[case::first_line_only(
-    "#DST_IMAGE,0,0,0,0,1,1,0,255,255,255,255,1,0,0,0,500,41,900,-901,0\n#DST_IMAGE,0,100,0,0,1,1,0,255,255,255,255,1,0,0,0,1,2,3,4,5\n",
-    Some(500), Some(TimerRef(41)), vec![ConditionRef(900), ConditionRef(-901)]
+    "#DST_IMAGE,0,0,0,0,1,1,0,255,255,255,255,1,0,0,0,500,41,900,-901,0\n#DST_IMAGE,0,100,0,0,1,1,0,255,255,255,255,1,0,0,0,1,2,3,4,5,6\n",
+    Some(500), Some(TimerRef(41)), vec![ConditionRef(900), ConditionRef(-901)], [0, 0]
 )]
-#[case::zeros_dropped("#DST_IMAGE,0,0,0,0,1,1,0,255,255,255,255,1,0,0,0,0,0,0,0,0\n", Some(0), Some(TimerRef(0)), vec![])]
+#[case::zeros_dropped("#DST_IMAGE,0,0,0,0,1,1,0,255,255,255,255,1,0,0,0,0,0,0,0,0\n", Some(0), Some(TimerRef(0)), vec![], [0, 0])]
+#[case::op4_op5_not_conditions("#DST_IMAGE,0,0,0,0,1,1,0,255,255,255,255,1,0,0,0,0,0,0,0,32,1,2\n", Some(0), Some(TimerRef(0)), vec![ConditionRef(32)], [1, 2])]
 fn skn_dst_02_first_dst_attributes(
     #[case] dsts: &str,
     #[case] looping: Option<i32>,
     #[case] timer: Option<TimerRef>,
     #[case] conditions: Vec<ConditionRef>,
+    #[case] extra: [i32; 2],
 ) {
     let e = &lr2(&format!("{IMG}{dsts}")).elements[0];
     assert_eq!(
-        (e.looping, e.timer, e.conditions.clone()),
-        (looping, timer, conditions)
+        (e.looping, e.timer, e.conditions.clone(), e.dst_extra),
+        (looping, timer, conditions, extra)
     );
 }
 
@@ -544,6 +564,24 @@ fn skn_dst_04_prefix_fallback(#[case] body: &str, #[case] commands: Vec<&str>) {
             .map(|e| e.command.as_str())
             .collect::<Vec<_>>(),
         commands
+    );
+}
+
+/// SKN-DST-05: 描画順は最初の DST 行の順番（飛ばした行・#IF 系の行は数えない）
+#[rstest]
+#[case::src_then_dst(
+    "#SRC_IMAGE,0,0,0,0,1,1,1,1,0,0\n#SRC_IMAGE,1,0,0,0,1,1,1,1,0,0\n#DST_IMAGE,1,0,0,0,1,1\n#DST_IMAGE,0,0,0,0,1,1\n#DST_IMAGE,1,9,0,0,1,1\n",
+    vec![4, 3]
+)]
+#[case::skipped_lines_not_counted(
+    "#SRC_IMAGE,0,0,0,0,1,1,1,1,0,0\n#IF,999\n#SETOPTION,900,1\n#ENDIF\n#DST_IMAGE,0,0,0,0,1,1\n",
+    vec![2]
+)]
+fn skn_dst_05_order(#[case] body: &str, #[case] orders: Vec<u32>) {
+    let d = lr2(body);
+    assert_eq!(
+        d.elements.iter().map(|e| e.order).collect::<Vec<_>>(),
+        orders
     );
 }
 

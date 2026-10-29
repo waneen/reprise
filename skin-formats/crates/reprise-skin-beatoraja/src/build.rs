@@ -323,6 +323,7 @@ impl<'a> Loader<'a> {
             elements: vec![],
             directives: vec![],
             diagnostics: vec![],
+            options: ops.clone(),
         };
 
         // BRJ-HDR-03
@@ -567,6 +568,8 @@ impl<'a> Loader<'a> {
             timer,
             conditions,
             looping: Some(i32_or(d, "loop", 0)),
+            dst_extra: [0; 2],
+            order: 0,
             keyframes,
         })
     }
