@@ -4,3 +4,6 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 # 依存ゼロ：フレームワーク・I/O・記法を一切知らない
+
+[dev-dependencies]
+rstest.workspace = true
