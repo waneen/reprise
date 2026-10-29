@@ -74,5 +74,5 @@ beatoraja の判定・ゲージ（`BeatorajaRuleset`）は beatoraja の 7 鍵�
 未対応（今後）: beatoraja の Lua スキン、`#SCROLL`・`#LNTYPE 2`・DSC/`#FP`、BGA の動画、bmson の `c`（続きから鳴らす）、判定・ゲージのうち段位（コース）ゲージ・LR2 の NONSTOP 判定幅・ロングノーツ終端の判定幅・beatoraja の 5 鍵/PMS/24 鍵ルールと `#DEFEXRANK`、beatoraja のプレイ進行（判定するノーツの選び方・LN の種類・ランプ）、ハイスピードの変更・キー設定・ゲームパッド・2P/DP/9 鍵・LN 終端の音・BGA。LR2 スキン描画のうち: 加算などアルファ以外の合成（アルファ合成で描く）・フィルタ指定（常に最近傍）・TEXT・BGA・小節線・BUTTON・2P 側・リフト/レーンカバー/HIDDEN/SUDDEN・オート用ノーツ・スコアとゲージ表示の追いかけアニメーション・`#STARTINPUT` などの時間指定（タイマー 2 = 閉幕も未対応）・スキンの位置調整（adjust）・皿を回す向きの区別（押している間は常に逆回転）・スキン描画時のリザルト表示、`#TRANSCOLOR` は位置にかかわらず全画像に適用、beatoraja スキンでの描画
 
 ## ビルド
-各ディレクトリで `cargo test`（game は兄弟ディレクトリを path 参照するので３つ揃えて配置）。
+各ディレクトリで `cargo test`（game は兄弟ディレクトリを path 参照するので3つ揃えて配置）。
 CI はテストと lint だけ。クロスビルドは手元で `bash tools/cross-build.sh <target>`
