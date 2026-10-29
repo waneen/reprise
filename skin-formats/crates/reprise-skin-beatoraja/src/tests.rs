@@ -182,6 +182,7 @@ fn brj_opt_01_enabled_options(
     }
     let d = decode_with(&probe(op), &[], &s);
     assert_eq!(ids(&d) == vec!["HIT"], hit);
+    assert_eq!(d.options.contains(&op), hit);
 }
 
 /// BRJ-IF-01: 配列の条件付き要素
