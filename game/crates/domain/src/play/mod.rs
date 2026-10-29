@@ -6,11 +6,13 @@ pub mod beatoraja;
 mod gauge;
 mod judge;
 pub mod lr2;
+mod lr2_play;
 mod timing;
 pub use beatoraja::BeatorajaRuleset;
 pub use gauge::{Gauge, GaugeType};
 pub use judge::{JudgeLane, JudgeWindows, Window};
 pub use lr2::Lr2Ruleset;
+pub use lr2_play::{JudgeCounts, Lr2Play, PlayEvent};
 pub use timing::TimingMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

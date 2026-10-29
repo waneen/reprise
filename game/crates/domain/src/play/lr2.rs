@@ -95,7 +95,7 @@ pub(crate) struct Lr2Gauge {
 }
 
 impl Lr2Gauge {
-    fn new(ty: GaugeType, total: Option<f64>, notes: usize) -> Option<Self> {
+    pub(crate) fn new(ty: GaugeType, total: Option<f64>, notes: usize) -> Option<Self> {
         let total = effective_total(total, notes);
         let n = notes.max(1);
         let dmg = damage_factor(total, notes);
@@ -142,6 +142,15 @@ impl Lr2Gauge {
         if before <= 0 {
             self.hp = 0.0;
         }
+    }
+
+    /// 地雷: HP から生の値を引く（GROOVE/EASY は 2 で止まる）
+    pub(crate) fn apply_mine(&mut self, damage: f64) {
+        self.hp -= damage;
+        if Self::recovering(self.ty) && self.hp <= 2.0 {
+            self.hp = 2.0;
+        }
+        self.hp = self.hp.clamp(0.0, 100.0);
     }
 
     pub(crate) fn qualified(&self) -> bool {
