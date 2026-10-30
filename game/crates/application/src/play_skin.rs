@@ -24,6 +24,17 @@ pub fn judge_index(j: Judge) -> usize {
     }
 }
 
+/// 途中終了を見る入力（APP-SKN-14。LR2 の入力の状態 2 = 押し続け）
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct QuitInput {
+    /// Esc を押している
+    pub escape: bool,
+    /// マウスの右ボタンの状態（LR2 `En_input.cpp`: 0 なし・1 押した・2 押し続け・3 離した）
+    pub mouse_right: u8,
+    pub start_held: bool,
+    pub select_held: bool,
+}
+
 /// BD 以下の判定から POOR 層を出す時間（LR2 の設定 `poorbga` の既定）
 const POOR_BGA_MS: i64 = 500;
 
@@ -102,6 +113,10 @@ pub struct PlaySkin {
     combo: i64,
     /// 片付いたノーツの数（空POOR・地雷を除く判定の数）
     processed: i64,
+    /// 踏んだ地雷の数（LR2 の `judgecount[0]`。数値 114 は POOR の数にこれを足す）
+    mines: u32,
+    /// 途中終了した（APP-SKN-14。以後は判定しない）
+    quit: bool,
     /// 文字列（APP-SKN-10）
     texts: BTreeMap<i32, String>,
     /// BGA の切り替え（時刻順。APP-SKN-11）と次に見るもの
@@ -252,6 +267,8 @@ impl PlaySkin {
             beat: 0.0,
             combo: 0,
             processed: 0,
+            mines: 0,
+            quit: false,
         };
         // 画面の開始
         s.starts.insert(0, -lead_in_ms);
@@ -288,6 +305,32 @@ impl PlaySkin {
         over(3, self.timing.close) || over(2, self.timing.fade_out)
     }
 
+    /// APP-SKN-14: 途中終了（LR2 `ProcI_Play`）。閉じ始める前（タイマー 2・3 が止まっている）に、Esc かマウスの右の状態 2、
+    /// START と SELECT の押し続け、全ノーツを片付けた後は START か SELECT の押し続けで、タイマー 2 を始めて
+    /// ゲージグラフを終わりまで埋め（片付いていないノーツがあれば 0）、以後は判定しない。`#FADEOUT` の後に場面を閉じる
+    pub fn quit(&mut self, input: &QuitInput, total_notes: u32) {
+        if self.quit || self.starts.contains_key(&2) || self.starts.contains_key(&3) {
+            return;
+        }
+        let all_done = self.processed >= total_notes as i64;
+        let start_select = input.start_held && input.select_held;
+        let either = input.start_held || input.select_held;
+        if input.escape || input.mouse_right == 2 || start_select || (all_done && either) {
+            self.quit = true;
+            self.set(2);
+            if !self.graph_done {
+                let unfinished = self.processed < total_notes as i64;
+                self.graph.finish(if unfinished { 0.0 } else { self.hp });
+                self.graph_done = true;
+            }
+        }
+    }
+
+    /// 途中終了した（以後は `PlaySession::frame` を呼ばない）
+    pub fn quitting(&self) -> bool {
+        self.quit
+    }
+
     fn set(&mut self, timer: i32) {
         self.starts.insert(timer, self.now);
     }
@@ -309,6 +352,10 @@ impl PlaySkin {
     pub fn update(&mut self, t_ms: i64, session: &PlaySession, events: &[PlayEvent]) {
         let dt = (t_ms - self.now).max(0);
         self.now = t_ms;
+        // 途中終了した後は時刻だけ進める（APP-SKN-14）
+        if self.quit {
+            return;
+        }
         let play = session.play();
         // 場面の時間（APP-SKN-01）: 入力開始・準備完了・プレイ開始 = 譜面の先頭
         let scene = t_ms + self.lead_in_ms;
@@ -343,7 +390,10 @@ impl PlaySkin {
                     }
                     self.set(46);
                 }
-                PlayEvent::Mine { .. } => self.set(46),
+                PlayEvent::Mine { .. } => {
+                    self.mines += 1;
+                    self.set(46);
+                }
                 _ => {}
             }
         }
@@ -484,7 +534,8 @@ impl PlaySkin {
         n.insert(111, c.great as i64);
         n.insert(112, c.good as i64);
         n.insert(113, c.bad as i64);
-        n.insert(114, c.poor as i64);
+        // LR2 の 114 は judgecount[0] + judgecount[1]（地雷は両方に数える）
+        n.insert(114, c.poor as i64 + self.mines as i64);
         n.insert(160, session.timing().bpm_at(t_ms * 1000) as i64);
         // オプション（APP-OPT-04）: ハイスピード・判定タイミング・レーンカバー
         let o = self.opts.options;
@@ -519,7 +570,13 @@ impl PlaySkin {
             processed: self.processed as u32,
             combo: play.combo(),
             max_combo: play.max_combo(),
-            hp: play.gauge(),
+            mines: self.mines,
+            // LR2 は片付いていないノーツが残ったまま終わると HP を 0 にする
+            hp: if self.processed < play.total_notes() as i64 {
+                0.0
+            } else {
+                play.gauge()
+            },
             lamp: play.clear_lamp(),
             graph: self.graph.points().to_vec(),
             saved,
