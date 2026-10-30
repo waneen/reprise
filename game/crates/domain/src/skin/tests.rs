@@ -12,6 +12,7 @@ struct St {
     bar: f64,
     slider: f64,
     angle: f32,
+    texts: BTreeMap<i32, String>,
 }
 impl SkinState for St {
     fn timer(&self, id: i32) -> Option<i64> {
@@ -31,6 +32,9 @@ impl SkinState for St {
     }
     fn turntable(&self, side: i32) -> f32 {
         self.angle * side as f32
+    }
+    fn text(&self, id: i32) -> Option<&str> {
+        self.texts.get(&id).map(String::as_str)
     }
 }
 fn st(timers: &[(i32, i64)]) -> St {
@@ -89,10 +93,27 @@ fn skin(elements: Vec<Element>) -> Skin {
         options: vec![],
         color_key: None,
         timing: Default::default(),
+        fonts: vec![],
+        image_fonts: vec![],
     }
 }
 fn size(_: u32) -> Option<(u32, u32)> {
     Some((256, 128))
+}
+/// 四角形だけを取り出す
+fn quads(
+    skin: &Skin,
+    st: &dyn SkinState,
+    view: &PlayView,
+    size: &dyn Fn(u32) -> Option<(u32, u32)>,
+) -> Vec<Quad> {
+    draw_play(skin, st, view, size)
+        .into_iter()
+        .filter_map(|d| match d {
+            Draw::Quad(q) => Some(q),
+            Draw::Text(_) => None,
+        })
+        .collect()
 }
 fn dsts(q: &[Quad]) -> Vec<[f32; 4]> {
     q.iter().map(|q| q.dst).collect()
@@ -195,7 +216,7 @@ fn dom_skd_04_source_frame(
             kf(first_key + 1000, [0.0, 0.0, 1.0, 1.0], 255, 0),
         ],
     );
-    let q = draw_play(&skin(vec![e]), &st(&timers), &PlayView::default(), &size);
+    let q = quads(&skin(vec![e]), &st(&timers), &PlayView::default(), &size);
     assert_eq!(srcs(&q), vec![want]);
 }
 
@@ -281,7 +302,7 @@ fn dom_skd_07_elements(
         angle: 30.0,
         ..Default::default()
     };
-    let q = draw_play(&skin(elements), &s, &PlayView::default(), &size);
+    let q = quads(&skin(elements), &s, &PlayView::default(), &size);
     assert_eq!(dsts(&q), want);
     assert!(q.iter().all(|q| q.angle == angle));
 }
@@ -358,7 +379,7 @@ fn dom_skd_09_judge_combo(
         combo,
         ..Default::default()
     };
-    let q = draw_play(&judge_skin(noshift), &st(&timers), &view, &size);
+    let q = quads(&judge_skin(noshift), &st(&timers), &view, &size);
     assert_eq!(dsts(&q), want);
 }
 
@@ -412,13 +433,13 @@ fn dom_skd_10_notes(
         ..Default::default()
     };
     let s = st(&[(0, 0), (41, 100), (70, 60)]);
-    let q = draw_play(&note_skin(), &s, &view, &size);
+    let q = quads(&note_skin(), &s, &view, &size);
     assert_eq!(dsts(&q), want_dst);
     assert_eq!(srcs(&q), want_src);
     assert!(q
         .iter()
         .all(|q| q.argb[0] == 255 && q.blend == Blend::Alpha));
-    let before = draw_play(&note_skin(), &st(&[(0, 0)]), &view, &size);
+    let before = quads(&note_skin(), &st(&[(0, 0)]), &view, &size);
     assert!(before.is_empty());
 }
 
@@ -448,7 +469,134 @@ fn dom_skd_11_measure_lines(
     if playing {
         timers.push((41, 10));
     }
-    let q = draw_play(&skin(vec![e]), &st(&timers), &view, &size);
+    let q = quads(&skin(vec![e]), &st(&timers), &view, &size);
     assert_eq!(dsts(&q), want);
     assert!(q.iter().all(|q| q.argb[0] == 255));
+}
+
+/// 文字列 10 = "A"、画像フォント 0（大きさ 10）、システムフォント 0・1
+fn text_skin(image_font: Option<ImageFont>, font: u32, dst: [f32; 4]) -> Skin {
+    let e = Element {
+        kind: ElementKind::Text {
+            value_ref: 10,
+            font,
+            align: 0,
+        },
+        source: None,
+        timer: TimerId(0),
+        conditions: vec![],
+        looping: Some(0),
+        dst_extra: [0; 2],
+        order: 0,
+        keyframes: vec![Keyframe {
+            angle: 30.0,
+            ..kf(0, dst, 200, 0)
+        }],
+    };
+    let mut sk = skin(vec![e]);
+    sk.image_fonts = vec![image_font];
+    sk.fonts = vec![
+        Some(SystemFont {
+            size: 24,
+            thickness: 3,
+            kind: 1,
+        }),
+        None,
+    ];
+    sk
+}
+fn glyph_font(size: i32) -> ImageFont {
+    ImageFont {
+        size,
+        margin: 0,
+        glyphs: [(
+            'A',
+            FontGlyph {
+                image: 3,
+                rect: [0, 0, 8, 10],
+            },
+        )]
+        .into_iter()
+        .collect(),
+    }
+}
+
+/// DOM-SKD-12: 文字列は DST の幅・高さが 0 でなく、文字列が空でないときだけ描く。同じ番号の画像フォント（大きさ > 0）で、
+/// 無ければ同じ番号のシステムフォントで描く。角度は使わない
+#[rstest]
+#[case::image_font(Some(glyph_font(10)), 0, [100.0, 50.0, 200.0, 20.0], "A", vec!["quad 3 [100.0, 50.0, 16.0, 20.0] 0"])]
+#[case::system_font(None, 0, [100.0, 50.0, 200.0, 20.0], "A", vec!["text 24 A [100.0, 50.0, 200.0, 20.0] 200"])]
+#[case::zero_size_image_font_uses_system(Some(glyph_font(0)), 0, [100.0, 50.0, 200.0, 20.0], "A", vec!["text 24 A [100.0, 50.0, 200.0, 20.0] 200"])]
+#[case::zero_width(Some(glyph_font(10)), 0, [100.0, 50.0, 0.0, 20.0], "A", vec![])]
+#[case::empty_text(Some(glyph_font(10)), 0, [100.0, 50.0, 200.0, 20.0], "", vec![])]
+#[case::no_font(None, 1, [100.0, 50.0, 200.0, 20.0], "A", vec![])]
+fn dom_skd_12_text(
+    #[case] image_font: Option<ImageFont>,
+    #[case] font: u32,
+    #[case] dst: [f32; 4],
+    #[case] text: &str,
+    #[case] want: Vec<&str>,
+) {
+    let s = St {
+        timers: [(0, 0)].into_iter().collect(),
+        texts: [(10, text.to_string())].into_iter().collect(),
+        ..Default::default()
+    };
+    let got: Vec<String> = draw_play(
+        &text_skin(image_font, font, dst),
+        &s,
+        &PlayView::default(),
+        &size,
+    )
+    .into_iter()
+    .map(|d| match d {
+        Draw::Quad(q) => format!("quad {} {:?} {}", q.image, q.dst, q.angle),
+        Draw::Text(t) => format!("text {} {} {:?} {}", t.font.size, t.text, t.dst, t.argb[0]),
+    })
+    .collect();
+    assert_eq!(got, want);
+}
+
+/// DOM-SKD-13: 画像フォントの並べ方。幅 = Σ(文字の幅 + 間隔) − 間隔、縦の倍率 = h / 大きさ、横の倍率 = 縦の倍率 × min(1, w / 幅)。
+/// 揃え 1 は 幅 × 横の倍率 / 2、2 は 幅 × 横の倍率 だけ左へ（切り捨て）。無い文字は `?`、空白は描かずに進める。位置は四捨五入
+#[rstest]
+#[case::left("AB", [100.0, 50.0, 200.0, 20.0], 0, vec![[100.0, 50.0, 16.0, 20.0], [120.0, 50.0, 12.0, 20.0]])]
+#[case::shrink_to_width("AB", [100.0, 50.0, 8.0, 20.0], 0, vec![[100.0, 50.0, 8.0, 20.0], [110.0, 50.0, 6.0, 20.0]])]
+#[case::center("AB", [100.0, 50.0, 200.0, 20.0], 1, vec![[84.0, 50.0, 16.0, 20.0], [104.0, 50.0, 12.0, 20.0]])]
+#[case::right("AB", [100.0, 50.0, 200.0, 20.0], 2, vec![[68.0, 50.0, 16.0, 20.0], [88.0, 50.0, 12.0, 20.0]])]
+#[case::unknown_is_question("C", [100.0, 50.0, 200.0, 20.0], 0, vec![[100.0, 50.0, 8.0, 20.0]])]
+#[case::space_advances("A A", [100.0, 50.0, 200.0, 20.0], 0, vec![[100.0, 50.0, 16.0, 20.0], [134.0, 50.0, 16.0, 20.0]])]
+#[case::rounds("A", [100.4, 50.6, 200.0, 20.0], 0, vec![[100.0, 51.0, 16.0, 20.0]])]
+fn dom_skd_13_image_font_layout(
+    #[case] text: &str,
+    #[case] dst: [f32; 4],
+    #[case] align: i32,
+    #[case] want: Vec<[f32; 4]>,
+) {
+    let g = |image: u32, x: i32, w: i32| FontGlyph {
+        image,
+        rect: [x, 0, w, 10],
+    };
+    let f = ImageFont {
+        size: 10,
+        margin: 2,
+        glyphs: [
+            ('A', g(1, 0, 8)),
+            ('B', g(1, 8, 6)),
+            ('?', g(2, 20, 4)),
+            (' ', g(1, 30, 5)),
+        ]
+        .into_iter()
+        .collect(),
+    };
+    let got: Vec<[f32; 4]> = layout_text(&f, text, dst, align)
+        .into_iter()
+        .map(|(_, _, d)| d)
+        .collect();
+    assert_eq!(got, want);
+    let empty = ImageFont {
+        size: 10,
+        ..Default::default()
+    };
+    assert!(layout_text(&empty, "A", dst, align).is_empty());
 }
