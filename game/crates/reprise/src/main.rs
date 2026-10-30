@@ -3,6 +3,7 @@
 //!
 //! 使い方: `reprise --songs <フォルダ> [オプション]` で選曲から、`reprise <譜面ファイル> [オプション]` でその譜面のプレイから（オプションは [`USAGE`]）。
 //! 1P の 7 鍵（5 鍵）のプレイ画面。`--skin` で LR2 のプレイスキンで描き、無ければ四角形だけで描く。
+//! 選曲画面は `--select-skin` で LR2 の選曲スキンで描き、無ければ文字の一覧で描く。
 //! `--skin-root` はスキン中のパスの基準（LR2 なら LR2 本体のフォルダ。既定は今のフォルダ）。
 //! 記録は `--data` のフォルダ（既定は今のフォルダの `reprise-data`）の `score.db` に、設定は `config.json` に保存する
 //! （起動引数で渡した設定も保存するので、次からは引数無しで選曲から始められる）。
@@ -17,18 +18,13 @@ use application::play_skin::PlaySkin;
 use application::ports::{AudioOutput, ChartLoader, FileSystem, SkinLoader};
 use application::settings::Settings;
 use application::usecase::SavedScore;
-use bevy::asset::RenderAssetUsages;
 use bevy::audio::AudioSource;
-use bevy::camera::visibility::NoFrustumCulling;
-use bevy::camera::{OrthographicProjection, Projection, ScalingMode};
 use bevy::ecs::system::RunSystemOnce;
-use bevy::image::ImageSampler;
 use bevy::input::mouse::MouseWheel;
 use bevy::platform::time::Instant;
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use bevy::sprite::{update_text2d_layout, Anchor};
-use bevy::text::{FontSize, FontSource, FontWeight, TextLayoutInfo};
+use bevy::sprite::update_text2d_layout;
+use bevy::text::FontSource;
 use bevy::transform::TransformSystems;
 use bevy::window::{PresentMode, WindowResolution};
 use chart_loader::DecoderLoader;
@@ -40,11 +36,11 @@ use domain::play::{GaugeType, HsFix, Judge, PlayEvent};
 use domain::random::LegacyMt;
 use domain::score::{SaveMode, ScoreRecord};
 use domain::select::Library;
-use domain::skin::lr2::{draw_play, Draw, Quad, TextRun};
+use domain::skin::lr2::draw_play;
 use domain::skin::{SceneKind, Skin};
 use platform::{fatal, seed, Scores};
 use skin_loader::DecoderSkinLoader;
-use skin_render::{SkinMaterial, SkinRenderPlugin};
+use skin_render::{Pixels, SkinDraw, SkinGfx, SkinRenderPlugin, SkinSprite};
 use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -55,7 +51,7 @@ const LEAD_IN_MS: i64 = 2000;
 /// 判定ラインから上端までに見える拍数（スキン無しのとき）
 const VISIBLE_BEATS: f64 = 4.0;
 
-const USAGE: &str = "使い方: reprise [--songs <譜面のフォルダ>...] [<譜面ファイル>] [--gauge groove|easy|hard|death|pattack|gattack] [--skin <スキン> [--skin-root <フォルダ>]] \
+const USAGE: &str = "使い方: reprise [--songs <譜面のフォルダ>...] [<譜面ファイル>] [--gauge groove|easy|hard|death|pattack|gattack] [--skin <スキン>] [--select-skin <スキン>] [--skin-root <フォルダ>] \
 [--hs <ハイスピード×100>] [--hsfix off|max|min|avg|const|main] [--cover <0..100>] [--offset <ms>] [--auto] [--data <フォルダ>]";
 
 /// 記録などを置くフォルダの既定（今のフォルダから）
@@ -79,7 +75,7 @@ fn chart_loaders() -> Vec<Box<dyn ChartLoader>> {
     ]
 }
 
-/// スキンの読み込み（描けるのは LR2 のプレイスキン）
+/// スキンの読み込み（描けるのは LR2 のプレイスキンと選曲スキン）
 fn skin_loaders(fs: &Arc<dyn FileSystem>, root: PathBuf) -> Vec<Box<dyn SkinLoader>> {
     vec![
         Box::new(DecoderSkinLoader {
@@ -99,9 +95,6 @@ fn skin_loaders(fs: &Arc<dyn FileSystem>, root: PathBuf) -> Vec<Box<dyn SkinLoad
         }),
     ]
 }
-
-/// 読み込んだスキン画像（幅, 高さ, RGBA）
-type Pixels = (u32, u32, Vec<u8>);
 
 /// スキン画像を RGBA にする。アルファの無い画像は抜き色の画素を透明にする
 fn load_image(
@@ -127,11 +120,12 @@ fn load_image(
     Ok((rgba.width(), rgba.height(), rgba.into_raw()))
 }
 
-/// スキンと画像を読み込む
-fn load_skin(
+/// スキンと画像を読み込む。`scenes` は描ける場面の種類
+pub fn load_skin(
     fs: &Arc<dyn FileSystem>,
     path: &Path,
     root: PathBuf,
+    scenes: &[SceneKind],
 ) -> Result<(Skin, Vec<Option<Pixels>>), String> {
     let loaders = skin_loaders(fs, root);
     let loader = loaders
@@ -142,9 +136,10 @@ fn load_skin(
     let skin = loader
         .load(path, &mut rng)
         .map_err(|e| format!("スキンを読めない: {e:?}"))?;
-    if !matches!(skin.scene, SceneKind::Play7 | SceneKind::Play5) {
+    if !scenes.contains(&skin.scene) {
         return Err(format!(
-            "7 鍵・5 鍵のプレイスキンではない: {:?}",
+            "{} の種類が違う（{scenes:?} ではない）: {:?}",
+            path.display(),
             skin.scene
         ));
     }
@@ -355,6 +350,7 @@ fn main() {
         match a.as_str() {
             "--songs" => cli_songs.push(PathBuf::from(value())),
             "--skin" => settings.skin = Some(PathBuf::from(value())),
+            "--select-skin" => settings.select_skin = Some(PathBuf::from(value())),
             "--skin-root" => settings.skin_root = Some(PathBuf::from(value())),
             "--gauge" => settings.gauge = parse_gauge(value()).unwrap_or_else(|| usage()),
             "--hs" => o.hi_speed = number(),
@@ -413,6 +409,13 @@ fn main() {
         direct,
     };
     let input_map = input::InputMap::new(s.bindings.clone());
+    // 選曲スキン（読めなければ文字の一覧）
+    let select_skin = match (&s.select_skin, direct) {
+        (Some(p), false) => load_skin(&boot.fs, p, boot.skin_root.clone(), &[SceneKind::Select])
+            .map_err(|e| eprintln!("選曲スキンを読めないので文字の一覧で出す: {e}"))
+            .ok(),
+        _ => None,
+    };
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -435,7 +438,7 @@ fn main() {
     .insert_resource(input_map)
     .init_resource::<input::SlotInput>()
     .insert_resource(scores)
-    .insert_resource(select_scene::Selection::new(library))
+    .insert_resource(select_scene::Selection::new(library, select_skin))
     .add_systems(
         PreUpdate,
         input::read_input.after(bevy::input::InputSystems),
@@ -443,8 +446,14 @@ fn main() {
     .add_systems(OnEnter(Scene::Select), select_scene::enter)
     .add_systems(
         Update,
-        (select_scene::input, select_scene::draw)
-            .chain()
+        (
+            (select_scene::input, select_scene::draw)
+                .chain()
+                .run_if(|s: Res<select_scene::Selection>| !s.has_skin()),
+            (select_scene::skin_input, select_scene::draw_skin)
+                .chain()
+                .run_if(|s: Res<select_scene::Selection>| s.has_skin()),
+        )
             .run_if(in_state(Scene::Select)),
     )
     .add_systems(OnEnter(Scene::Play), enter_play)
@@ -464,7 +473,7 @@ fn main() {
     )
     .add_systems(
         PostUpdate,
-        place_text
+        skin_render::place_text
             .after(update_text2d_layout)
             .before(TransformSystems::Propagate),
     );
@@ -524,7 +533,14 @@ fn prepare_play(boot: &Boot, req: &PlayRequest) -> Result<Prepared, String> {
     let skin = boot
         .skin_path
         .as_ref()
-        .map(|p| load_skin(fs, p, boot.skin_root.clone()))
+        .map(|p| {
+            load_skin(
+                fs,
+                p,
+                boot.skin_root.clone(),
+                &[SceneKind::Play7, SceneKind::Play5],
+            )
+        })
         .transpose()?;
     let (chart, sounds) = load(fs.as_ref(), &req.path)?;
     let input = KeyInput::new(
@@ -544,14 +560,12 @@ fn prepare_play(boot: &Boot, req: &PlayRequest) -> Result<Prepared, String> {
         Some((skin, mut images)) => {
             let lengths: BTreeMap<SoundId, i64> =
                 sounds.iter().map(|(id, b)| (*id, sound_ms(b))).collect();
-            // 描画側の画像 = スキンの画像、BGA の画像、単色用の白 1 画素 の順
+            // 描画側の画像 = スキンの画像、BGA の画像（単色用の白 1 画素は `SkinGfx` が足す）
             let mut bga_images = BTreeMap::new();
             for (id, px) in load_bga(fs.as_ref(), &chart, &req.path) {
                 bga_images.insert(id, images.len() as u32);
                 images.push(Some(px));
             }
-            let white = images.len() as u32;
-            images.push(Some((1, 1, vec![255; 4])));
             let play = PlaySkin::new(
                 &chart,
                 &session,
@@ -562,20 +576,12 @@ fn prepare_play(boot: &Boot, req: &PlayRequest) -> Result<Prepared, String> {
                 &bga_images,
                 options,
             );
-            let sizes = images
-                .iter()
-                .map(|i| i.as_ref().map(|(w, h, _)| (*w, *h)))
-                .collect();
             (
                 Some(SkinPlay {
                     skin,
                     play,
-                    handles: vec![],
-                    materials: HashMap::new(),
-                    sizes,
+                    gfx: SkinGfx::default(),
                     rng: LegacyMt::new(seed()),
-                    texts: vec![],
-                    white,
                 }),
                 images,
             )
@@ -605,17 +611,10 @@ fn prepare_play(boot: &Boot, req: &PlayRequest) -> Result<Prepared, String> {
 struct SkinPlay {
     skin: Skin,
     play: PlaySkin,
-    /// スキン画像（読めなかったものは None）。フィルタ無し・有りの 2 つ
-    handles: Vec<Option<[Handle<Image>; 2]>>,
-    /// （画像, 合成モード, フィルタ）ごとのマテリアル
-    materials: HashMap<(u32, u8, bool), Handle<SkinMaterial>>,
-    sizes: Vec<Option<(u32, u32)>>,
+    /// 描く側の持ち物（画像は `setup` で渡す）
+    gfx: SkinGfx,
     /// ゲージのちらつき用（LR2 の `GetRand`）
     rng: LegacyMt,
-    /// システムフォントの文字列の実体（使い回す）
-    texts: Vec<Entity>,
-    /// 単色の四角形に使う白 1 画素の画像の番号
-    white: u32,
 }
 
 #[derive(Resource)]
@@ -654,9 +653,6 @@ struct PendingSounds(Sounds);
 struct PendingImages(Vec<Option<Pixels>>);
 
 #[derive(Component)]
-struct SkinSprite;
-
-#[derive(Component)]
 struct NoteSprite;
 
 #[derive(Component)]
@@ -683,42 +679,12 @@ fn setup(
         game.sounds.insert(id, h);
     }
     if let Some(sp) = game.skin.as_mut() {
-        // スキンの解像度を窓いっぱいに（縦横比は保つ）
-        let (w, h) = sp.skin.resolution;
         commands.spawn((
-            Camera2d,
-            Projection::Orthographic(OrthographicProjection {
-                scaling_mode: ScalingMode::AutoMin {
-                    min_width: w as f32,
-                    min_height: h as f32,
-                },
-                ..OrthographicProjection::default_2d()
-            }),
+            skin_render::camera(sp.skin.resolution),
             DespawnOnExit(Scene::Play),
         ));
-        sp.handles = pending_images
-            .0
-            .drain(..)
-            .map(|p| {
-                let (w, h, data) = p?;
-                let mut img = |sampler| {
-                    let mut image = Image::new(
-                        Extent3d {
-                            width: w,
-                            height: h,
-                            depth_or_array_layers: 1,
-                        },
-                        TextureDimension::D2,
-                        data.clone(),
-                        TextureFormat::Rgba8UnormSrgb,
-                        RenderAssetUsages::default(),
-                    );
-                    image.sampler = sampler;
-                    images.add(image)
-                };
-                Some([img(ImageSampler::nearest()), img(ImageSampler::linear())])
-            })
-            .collect();
+        let pixels = std::mem::take(&mut pending_images.0);
+        sp.gfx = SkinGfx::new(pixels, sp.skin.resolution, &mut images);
         return;
     }
     commands.spawn((Camera2d, DespawnOnExit(Scene::Play)));
@@ -861,28 +827,8 @@ fn play_frame(
     }
 }
 
-/// システムフォントの文字列（描く位置と大きさは文字列の幅が決まってから [`place_text`] で決める）。
-/// Bevy は見えている文字列しか組まないので、実体は使い回して見えたままにする
-#[derive(Component)]
-struct SkinText {
-    run: Option<TextRun>,
-    z: f32,
-    res: (u32, u32),
-}
-
-/// LR2 スキンで描く（毎フレーム作り直す）。同じ画像・合成モード・フィルタが続く四角形を 1 つのメッシュにする
-fn draw_skin(
-    mut commands: Commands,
-    mut game: ResMut<Game>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<SkinMaterial>>,
-    old: Query<(Entity, &Mesh2d), With<SkinSprite>>,
-    mut texts: Query<(&mut Text2d, &mut TextFont, &mut TextColor, &mut SkinText)>,
-) {
-    for (e, m) in &old {
-        meshes.remove(&m.0);
-        commands.entity(e).despawn();
-    }
+/// LR2 スキンで描く（毎フレーム作り直す）
+fn draw_skin(mut p: SkinDraw, mut game: ResMut<Game>) {
     let game = &mut *game;
     let Some(sp) = game.skin.as_mut() else {
         return;
@@ -895,150 +841,9 @@ fn draw_skin(
     if game.session.play().is_dead() {
         view.notes.clear();
     }
-    let sizes = &sp.sizes;
-    let size = |i: u32| sizes.get(i as usize).copied().flatten();
-    let draws = draw_play(&sp.skin, &sp.play, &view, &size);
-    let loaded = |i: u32| {
-        sp.handles
-            .get(i as usize)
-            .is_some_and(|h| h.is_some())
-            .then(|| size(i))
-            .flatten()
-    };
-    // 奥から順に z を増やす。続く四角形はまとめ、文字列はその間に挟む
-    let mut z = 0.0;
-    let mut quads: Vec<Quad> = vec![];
-    let mut runs: Vec<(TextRun, f32)> = vec![];
-    let mut flush = |quads: &mut Vec<Quad>, z: &mut f32, commands: &mut Commands| {
-        for b in skin_render::batches(quads, sp.skin.resolution, &loaded) {
-            let Some(Some(h)) = sp.handles.get(b.image as usize) else {
-                continue;
-            };
-            let texture = h[b.filter as usize].clone();
-            let material = sp
-                .materials
-                .entry((b.image, b.blend as u8, b.filter))
-                .or_insert_with(|| {
-                    materials.add(SkinMaterial {
-                        texture,
-                        blend: b.blend,
-                    })
-                })
-                .clone();
-            commands.spawn((
-                Mesh2d(meshes.add(b.mesh)),
-                MeshMaterial2d(material),
-                Transform::from_xyz(0.0, 0.0, *z),
-                SkinSprite,
-                DespawnOnExit(Scene::Play),
-            ));
-            *z += 0.001;
-        }
-        quads.clear();
-    };
-    for d in draws {
-        match d {
-            Draw::Quad(q) => quads.push(q),
-            Draw::Fill(f) => quads.push(Quad {
-                image: sp.white,
-                src: [0.0, 0.0, 1.0, 1.0],
-                dst: f.dst,
-                argb: f.argb,
-                angle: 0.0,
-                center: 0,
-                blend: f.blend,
-                filter: false,
-            }),
-            Draw::Text(run) => {
-                flush(&mut quads, &mut z, &mut commands);
-                runs.push((run, z));
-                z += 0.001;
-            }
-        }
-    }
-    flush(&mut quads, &mut z, &mut commands);
-    // 文字列の実体を使い回す（足りなければ作り、余りは空にする）
-    let res = sp.skin.resolution;
-    for i in 0..runs.len().max(sp.texts.len()) {
-        let run = runs.get(i).cloned();
-        let style = |r: &TextRun| {
-            let [a, red, g, b] = r.argb.map(|c| c as f32 / 255.0);
-            (
-                TextFont {
-                    // ブラウザ版は OS のフォントを探せないので Bevy の既定のフォント（Fira Mono。日本語の字は無い）
-                    font: if cfg!(target_arch = "wasm32") {
-                        TextFont::default().font
-                    } else {
-                        FontSource::SansSerif
-                    },
-                    font_size: FontSize::Px(r.font.size.max(1) as f32),
-                    weight: FontWeight((r.font.thickness.clamp(1, 9) * 100) as u16),
-                    ..default()
-                },
-                TextColor(Color::srgba(red, g, b, a)),
-            )
-        };
-        match sp.texts.get(i).and_then(|e| texts.get_mut(*e).ok()) {
-            Some((mut text, mut tf, mut color, mut st)) => {
-                let s = run.as_ref().map_or(String::new(), |(r, _)| r.text.clone());
-                if text.0 != s {
-                    text.0 = s;
-                }
-                if let Some((r, z)) = &run {
-                    let (f, c) = style(r);
-                    if tf.font_size != f.font_size || tf.weight != f.weight {
-                        *tf = f;
-                    }
-                    color.set_if_neq(c);
-                    st.z = *z;
-                }
-                st.run = run.map(|(r, _)| r);
-            }
-            None => {
-                let Some((r, z)) = run else { continue };
-                let (f, c) = style(&r);
-                let e = commands
-                    .spawn((
-                        Text2d::new(r.text.clone()),
-                        f,
-                        c,
-                        Anchor::TOP_LEFT,
-                        // 幅が分かるまでは大きさ 0
-                        Transform::from_scale(Vec3::ZERO),
-                        NoFrustumCulling,
-                        SkinText {
-                            run: Some(r),
-                            z,
-                            res,
-                        },
-                        DespawnOnExit(Scene::Play),
-                    ))
-                    .id();
-                sp.texts.push(e);
-            }
-        }
-    }
-}
-
-/// システムフォントの文字列を LR2 と同じく置く: 縦 = h / 大きさ、横 = 縦 × min(1, w / 幅)、揃え 1 は幅の半分・2 は幅だけ左へ
-fn place_text(mut q: Query<(&SkinText, &TextLayoutInfo, &mut Transform)>) {
-    for (t, info, mut tf) in &mut q {
-        let width = info.size.x;
-        let Some(run) = t.run.as_ref().filter(|_| width > 0.0) else {
-            tf.scale = Vec3::ZERO;
-            continue;
-        };
-        let [x, y, w, h] = run.dst;
-        let hl = h / run.font.size.max(1) as f32;
-        let wl = if width > w { w / width } else { 1.0 } * hl;
-        let x = match run.align {
-            1 => x - (width * wl * 0.5).trunc(),
-            2 => x - (width * wl).trunc(),
-            _ => x,
-        };
-        *tf = Transform::from_xyz(x - t.res.0 as f32 / 2.0, t.res.1 as f32 / 2.0 - y, t.z)
-            .with_scale(Vec3::new(wl, hl, 1.0));
-    }
+    let gfx = &sp.gfx;
+    let draws = draw_play(&sp.skin, &sp.play, &view, &|i| gfx.size(i));
+    skin_render::render(&mut p, &mut sp.gfx, draws, Scene::Play);
 }
 
 #[derive(Component)]
@@ -1060,9 +865,7 @@ fn show_result(
         commands.entity(e).despawn();
     }
     if let Some(sp) = game.skin.as_mut() {
-        for e in sp.texts.drain(..) {
-            commands.entity(e).despawn();
-        }
+        sp.gfx.despawn_texts(&mut commands);
     }
     let play = game.session.play();
     let c = play.counts();
