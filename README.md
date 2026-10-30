@@ -19,7 +19,7 @@ cd game && cargo run -p reprise --release -- path/to/chart.bms [--gauge groove|e
 ```
 1P の 7 鍵（5 鍵）のプレイ画面です。`--skin` に LR2 のプレイスキン（.lr2skin / .csv）を渡すとそれで描き、無ければ四角形だけで描きます。`--skin-root` はスキン中のパスの基準（LR2 本体のフォルダ。既定は今のフォルダ）。キーは皿 = 左 Shift / 左 Ctrl、鍵盤 1〜7 = Z S X D C F V、Esc で終了。
 
-スキン描画は画像・数字・ゲージ・判定とコンボ・ノーツ（LN・地雷）・小節線・BARGRAPH・SLIDER・皿の回転・合成モード（加算・減算・乗算など）・フィルタ・場面の時間（`#STARTINPUT`・`#FADEOUT` など）に対応し、曲が終わるか途中終了すると結果を文字で出します。TEXT・BGA・2P 側・レーンカバーなどは描きません（[ARCHITECTURE.md](ARCHITECTURE.md#lr2-互換の根拠)）。
+スキン描画は画像・数字・ゲージ・判定とコンボ・ノーツ（LN・地雷）・小節線・BARGRAPH・SLIDER・皿の回転・合成モード（加算・減算・乗算など）・フィルタ・場面の時間（`#STARTINPUT`・`#FADEOUT` など）・文字列（画像フォント `.lr2font` と OS のフォント）に対応し、曲が終わるか途中終了すると結果を文字で出します。BGA・2P 側・レーンカバーなどは描きません（[ARCHITECTURE.md](ARCHITECTURE.md#lr2-互換の根拠)）。
 
 Linux では Bevy のために `libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev` が必要です。
 
