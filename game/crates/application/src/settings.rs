@@ -2,6 +2,7 @@
 use crate::play_options::PlayOptions;
 use domain::input::Bindings;
 use domain::play::GaugeType;
+use domain::select::ListFilter;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -26,6 +27,10 @@ pub struct Settings {
     /// スキン設定の選択（スキンのパス → 項目名 → 選んだ名前。LR2 のスキン選択画面で選んで `SkinCustomize` に保存するもの）。
     /// 書いていない項目は既定（先頭）
     pub skin_custom: BTreeMap<PathBuf, BTreeMap<String, String>>,
+    /// 選曲の並べ替え・絞り込み（LR2 の `config.select` の `sort`・`key`・`difficulty`）
+    pub select: ListFilter,
+    /// 選曲のプレビュー音（LR2 の `config.select.preview`。既定は鳴らす）
+    pub preview: bool,
 }
 
 impl Default for Settings {
@@ -41,6 +46,8 @@ impl Default for Settings {
             options: PlayOptions::default(),
             bindings: Bindings::default(),
             skin_custom: BTreeMap::new(),
+            select: ListFilter::default(),
+            preview: true,
         }
     }
 }

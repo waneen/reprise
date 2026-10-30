@@ -214,3 +214,18 @@ fn sjs_07_places(
         want.len()
     );
 }
+
+/// SJS-10: 選曲の並べ替え・絞り込みとプレビュー音（(並べ替え, 鍵盤数, 難易度), プレビュー音）
+#[rstest]
+#[case::missing("{}", (0, 1, 0), true)]
+#[case::given(r#"{"select_sort": 3, "select_key": 0, "select_difficulty": 5, "preview": false}"#, (3, 0, 5), false)]
+#[case::out_of_range(r#"{"select_sort": 5, "select_key": -1, "select_difficulty": 6}"#, (0, 1, 0), true)]
+fn sjs_10_select_filter(#[case] text: &str, #[case] want: (i32, i32, i32), #[case] preview: bool) {
+    let v: Value = serde_json::from_str(text).unwrap();
+    let s = from_json(&v).unwrap();
+    let f = s.select;
+    assert_eq!(((f.sort, f.key, f.difficulty), s.preview), (want, preview));
+    let back = from_json(&to_json(&s)).unwrap();
+    assert_eq!((back.select, back.preview), (s.select, s.preview));
+    assert!(from_json(&serde_json::json!({"preview": 1})).is_err());
+}
