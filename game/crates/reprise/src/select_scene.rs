@@ -1,6 +1,6 @@
 //! 選曲画面（スキン無し。文字の一覧）。一覧の作り方とカーソルは `domain::select`。
 //! 操作: 皿（上・下）か ↑↓ で選び、鍵盤 1/3/5/7・Enter・→ で決定、
-//! 鍵盤 6 でオートプレイ、鍵盤 2・← で戻る。F1 でキー設定。最初の一覧で Esc なら終了
+//! 鍵盤 6 でオートプレイ、鍵盤 2・← で戻る。最初の一覧で Esc なら終了
 use crate::input::SlotInput;
 use crate::{list_font, PlayRequest, Scene, ScoreDb};
 use bevy::platform::time::Instant;
@@ -115,9 +115,6 @@ pub fn input(
     {
         sel.dirty = true;
     }
-    if keys.just_pressed(KeyCode::F1) {
-        next.set(Scene::KeyConfig);
-    }
     if keys.just_pressed(KeyCode::Escape) && !sel.state.back() {
         exit.write(AppExit::Success);
     } else if keys.just_pressed(KeyCode::Escape) {
@@ -192,6 +189,6 @@ pub fn draw(
         }
     }
     s +=
-        "\n\n↑↓/皿: 選ぶ  Enter/→/鍵盤 1・3・5・7: 決定  鍵盤 6: オート  ←/鍵盤 2: 戻る  F1: キー設定  Esc: 終了";
+        "\n\n↑↓/皿: 選ぶ  Enter/→/鍵盤 1・3・5・7: 決定  鍵盤 6: オート  ←/鍵盤 2: 戻る  Esc: 終了";
     text.0 = s;
 }

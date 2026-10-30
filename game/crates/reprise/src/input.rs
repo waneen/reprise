@@ -46,8 +46,6 @@ pub struct SlotInput {
     pub events: Vec<(usize, bool)>,
     pub held: [bool; SLOTS],
     pub pressed: [bool; SLOTS],
-    /// このフレームで最後に押された物理入力（キー設定用）
-    pub last_pressed: Option<Source>,
 }
 
 pub fn read_input(
@@ -102,11 +100,9 @@ pub fn read_input(
     }
     out.events.clear();
     out.pressed = [false; SLOTS];
-    out.last_pressed = None;
     for (src, down) in changes {
         if down {
             map.held.insert(src.clone());
-            out.last_pressed = Some(src.clone());
         } else {
             map.held.remove(&src);
         }
