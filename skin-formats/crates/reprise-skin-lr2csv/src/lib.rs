@@ -1,6 +1,6 @@
 //! LR2 csv スキン（`.lr2skin` / `.csv`）デコーダ。
 //!
-//! 根拠は OpenLR2（LR2 の逆コンパイル）の `LR2_skinload.cpp` / `LR2_skinmanage.cpp`
+//! 根拠は OpenLR2（作者の説明では LR2 のソースを書き起こしたもの）の `LR2_skinload.cpp` / `LR2_skinmanage.cpp`
 //! を仕様として参照した（コードは転載していない）。
 //!
 //! 方言（[`Dialect`]）:
@@ -39,11 +39,11 @@
 //! | SKN-INC-01 | `#INCLUDE,パス` はその場に展開する。`#IF` の状態は独立、条件（`#SETOPTION`）は共有。深さ 16 まで |
 //! | SKN-SRC-01 | `#SRC_x,添字,画像,x,y,w,h,分割x,分割y,周期,タイマー,引数×5` で要素を作る（分割は最小 1、x/y は負なら 0） |
 //! | SKN-SRC-02 | 種別ごとの引数: NUMBER(値,揃え,桁) SLIDER(向き,範囲,値,無効) BARGRAPH(値,向き) BUTTON(動作,クリック,パネル,加算のみ) |
-//! | SKN-SRC-03 | `#SRC_TEXT,添字,フォント,値,揃え,編集可` は画像を持たない |
-//! | SKN-DST-01 | `#DST_x` は同名の直近 SRC（同じ添字があればそれ）にキーフレームを追加。無ければ診断して無視 |
+//! | SKN-SRC-03 | `#SRC_TEXT,添字,フォント,値,揃え,編集可` は画像を持たない。`#SRC_BAR_TITLE` も同じ並び（OpenLR2 `ReadSRC_BAR_TITLE`）の文字列要素 |
+//! | SKN-DST-01 | `#DST_x` は同名の直近 SRC（同じ添字があればそれ）にキーフレームを追加。同名の SRC が無ければ SKN-DST-04、それも無ければ診断して無視 |
 //! | SKN-DST-02 | 最初の DST の ループ(16)・タイマー(17)・条件(18..20, 0 以外)・追加引数(21, 22) が要素の属性になる |
 //! | SKN-DST-03 | キーフレーム: 時刻(2) x,y,w,h(3..6) 加速(7) a,r,g,b(8..11) 合成(12) フィルタ(13) 角度(14) 中心(15) |
-//! | SKN-DST-04 | 同名 SRC が無く、`名前_…` の形なら接頭辞が一致する直近 SRC を複製して使う（例: BAR_BODY_ON → BAR_BODY） |
+//! | SKN-DST-04 | 同名 SRC が無く、`名前_…` の形なら接頭辞が一致する直近 SRC を複製して使う（例: BAR_BODY_ON → BAR_BODY）。複製した要素は添字ごとに別（`#DST_BAR_BODY_OFF,1` は `,0` の要素に足さない。OpenLR2 の `dst_BAR_BODY_OFF[添字]`） |
 //! | SKN-DST-05 | 描画順 = 最初の DST 行が何番目に処理した命令行か（`#IF` で飛ばした行・`#IF` 系の行は数えない） |
 //! | SKN-BLD-01 | 合成: 0=None 1=Alpha 2=Add 3=Sub 4=Mul 5=Sub2 9=InvDest 10=InvSrc 11=MulAlpha、それ以外は Alpha + 診断 |
 //! | SKN-DIR-01 | 上記以外の命令は `directives` に生のまま残す |
