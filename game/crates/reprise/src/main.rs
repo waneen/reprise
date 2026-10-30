@@ -3,11 +3,13 @@
 //!
 //! 使い方: `reprise --songs <フォルダ> [オプション]` で選曲から、`reprise <譜面ファイル> [オプション]` でその譜面のプレイから（オプションは [`USAGE`]）。
 //! 1P の 7 鍵（5 鍵）のプレイ画面。`--skin` で LR2 のプレイスキンで描き、無ければ四角形だけで描く。
-//! 選曲画面は `--select-skin` で LR2 の選曲スキンで描き、無ければ文字の一覧で描く。
+//! 選曲画面は `--select-skin` で LR2 の選曲スキンで描き、無ければ文字の一覧で描く。選曲スキンの BUTTON 13 で
+//! キー設定画面に入る（`config.json` の `keyconfig_skin` のキー設定スキンで描く。無ければ入らない）。
 //! `--skin-root` はスキン中のパスの基準（LR2 なら LR2 本体のフォルダ。既定は今のフォルダ）。
 //! 記録は `--data` のフォルダ（既定は今のフォルダの `reprise-data`）の `score.db` に、設定は `config.json` に保存する
 //! （起動引数で渡した設定も保存するので、次からは引数無しで選曲から始められる）。
 mod input;
+mod keyconfig_scene;
 mod platform;
 mod select_scene;
 mod skin_render;
@@ -75,7 +77,7 @@ fn chart_loaders() -> Vec<Box<dyn ChartLoader>> {
     ]
 }
 
-/// スキンの読み込み（描けるのは LR2 のプレイスキンと選曲スキン）
+/// スキンの読み込み（描けるのは LR2 のプレイスキン・選曲スキン・キー設定スキン）
 fn skin_loaders(fs: &Arc<dyn FileSystem>, root: PathBuf) -> Vec<Box<dyn SkinLoader>> {
     vec![
         Box::new(DecoderSkinLoader {
@@ -262,6 +264,8 @@ pub enum Scene {
     #[default]
     Select,
     Play,
+    /// キー設定（選曲スキンの BUTTON 13 から）
+    KeyConfig,
 }
 
 /// 次に遊ぶ譜面
@@ -416,6 +420,15 @@ fn main() {
             .ok(),
         _ => None,
     };
+    // キー設定スキン（選曲スキンの BUTTON 13 から入る。無い・読めなければ BUTTON 13 は何もしない）
+    let keyconfig_skin = match (&s.keyconfig_skin, &select_skin) {
+        (Some(p), Some(_)) => {
+            load_skin(&boot.fs, p, boot.skin_root.clone(), &[SceneKind::KeyConfig])
+                .map_err(|e| eprintln!("キー設定スキンを読めない: {e}"))
+                .ok()
+        }
+        _ => None,
+    };
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -456,6 +469,14 @@ fn main() {
         )
             .run_if(in_state(Scene::Select)),
     )
+    .add_systems(OnEnter(Scene::KeyConfig), keyconfig_scene::enter)
+    .add_systems(OnExit(Scene::KeyConfig), keyconfig_scene::exit)
+    .add_systems(
+        Update,
+        (keyconfig_scene::input, keyconfig_scene::draw)
+            .chain()
+            .run_if(in_state(Scene::KeyConfig)),
+    )
     .add_systems(OnEnter(Scene::Play), enter_play)
     .add_systems(OnExit(Scene::Play), exit_play)
     .add_systems(
@@ -477,6 +498,9 @@ fn main() {
             .after(update_text2d_layout)
             .before(TransformSystems::Propagate),
     );
+    if let Some((skin, pixels)) = keyconfig_skin {
+        app.insert_resource(keyconfig_scene::KeyConfigScreen::new(skin, pixels));
+    }
     if let Some(path) = chart_path {
         app.insert_resource(PlayRequest { path, auto: false });
     }
