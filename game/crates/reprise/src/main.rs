@@ -1,12 +1,13 @@
 //! Composition Root + プレゼンテーション層（Bevy はここだけ）。
 //! 記法を増やす = chart-formats/ か skin-formats/ に crate を足して、ここで 1 行登録するだけ。
 //!
-//! 使い方: `reprise <譜面ファイル> [--gauge groove|easy|hard|death|pattack|gattack] [--skin <スキン> [--skin-root <フォルダ>]]`
+//! 使い方: `reprise <譜面ファイル> [オプション]`（オプションは [`USAGE`]）
 //! 1P の 7 鍵（5 鍵）のプレイ画面。`--skin` で LR2 のプレイスキンで描き、無ければ四角形だけで描く。
 //! `--skin-root` はスキン中のパスの基準（LR2 なら LR2 本体のフォルダ。既定は今のフォルダ）。
 mod skin_render;
 
 use application::play::{KeyId, KeyInput, PlaySession, VisibleNote};
+use application::play_options::{ControlInput, PlayOptions};
 use application::play_skin::PlaySkin;
 use application::ports::{AudioOutput, ChartLoader, ScoreImporter, SkinLoader};
 use bevy::asset::RenderAssetUsages;
@@ -15,6 +16,7 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::camera::{OrthographicProjection, Projection, ScalingMode};
 use bevy::image::ImageSampler;
 use bevy::input::keyboard::KeyboardInput;
+use bevy::input::mouse::MouseWheel;
 use bevy::input::ButtonState;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -24,9 +26,9 @@ use bevy::transform::TransformSystems;
 use bevy::window::{PresentMode, WindowResolution};
 use chart_loader::DecoderLoader;
 use domain::chart::{Chart, ImageId, Lane, SoundId};
-use domain::play::{GaugeType, Judge, PlayEvent};
+use domain::play::{GaugeType, HsFix, Judge, PlayEvent};
 use domain::random::LegacyMt;
-use domain::skin::lr2::{draw_play, pixels_per_beat, Draw, Quad, TextRun};
+use domain::skin::lr2::{draw_play, Draw, Quad, TextRun};
 use domain::skin::{SceneKind, Skin};
 use skin_loader::DecoderSkinLoader;
 use skin_render::{SkinMaterial, SkinRenderPlugin};
@@ -40,8 +42,9 @@ use std::time::Instant;
 const LEAD_IN_MS: i64 = 2000;
 /// 判定ラインから上端までに見える拍数（スキン無しのとき）
 const VISIBLE_BEATS: f64 = 4.0;
-/// ハイスピード（×100。LR2 の既定）
-const HI_SPEED: f64 = 200.0;
+
+const USAGE: &str = "使い方: reprise <譜面ファイル> [--gauge groove|easy|hard|death|pattack|gattack] [--skin <スキン> [--skin-root <フォルダ>]] \
+[--hs <ハイスピード×100>] [--hsfix off|max|min|avg|const|main] [--cover <0..100>] [--offset <ms>] [--auto]";
 
 /// 既定のキー配置（1P）。皿は 2 つのキーで左右回転を表す
 const KEYMAP: [(KeyCode, u8); 9] = [
@@ -55,6 +58,9 @@ const KEYMAP: [(KeyCode, u8); 9] = [
     (KeyCode::KeyF, 6),
     (KeyCode::KeyV, 7),
 ];
+/// START・SELECT（beatoraja の既定のキー配置に合わせる）
+const START: KeyCode = KeyCode::KeyQ;
+const SELECT: KeyCode = KeyCode::KeyW;
 
 // 画面配置（ピクセル、原点は画面中央）
 const LANE_LEFT: f32 = -560.0;
@@ -158,6 +164,18 @@ fn score_importers() -> Vec<Box<dyn ScoreImporter>> {
     ]
 }
 
+fn parse_hs_fix(s: &str) -> Option<HsFix> {
+    Some(match s.to_ascii_lowercase().as_str() {
+        "off" => HsFix::Off,
+        "max" => HsFix::MaxBpm,
+        "min" => HsFix::MinBpm,
+        "avg" => HsFix::Average,
+        "const" => HsFix::Constant,
+        "main" => HsFix::MainBpm,
+        _ => return None,
+    })
+}
+
 fn parse_gauge(s: &str) -> Option<GaugeType> {
     Some(match s.to_ascii_lowercase().as_str() {
         "groove" | "normal" => GaugeType::Groove,
@@ -252,35 +270,34 @@ fn main() {
     let mut gauge = GaugeType::Groove;
     let mut skin_path = None;
     let mut skin_root = std::env::current_dir().unwrap_or_default();
+    let mut options = PlayOptions::default();
+    let usage = || -> ! {
+        eprintln!("{USAGE}");
+        std::process::exit(2);
+    };
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        if a == "--skin" || a == "--skin-root" {
-            let Some(v) = it.next() else {
-                eprintln!("{a} の後にパスが要る");
-                std::process::exit(2);
-            };
-            if a == "--skin" {
-                skin_path = Some(PathBuf::from(v));
-            } else {
-                skin_root = PathBuf::from(v);
+        let mut value = || it.next().unwrap_or_else(|| usage());
+        let mut number = || value().parse::<i32>().unwrap_or_else(|_| usage());
+        match a.as_str() {
+            "--skin" => skin_path = Some(PathBuf::from(value())),
+            "--skin-root" => skin_root = PathBuf::from(value()),
+            "--gauge" => gauge = parse_gauge(value()).unwrap_or_else(|| usage()),
+            "--hs" => options.hi_speed = number(),
+            "--hsfix" => options.hs_fix = parse_hs_fix(value()).unwrap_or_else(|| usage()),
+            "--cover" => {
+                options.lane_cover = true;
+                options.cover = number();
             }
-        } else if a == "--gauge" {
-            match it.next().and_then(|g| parse_gauge(g)) {
-                Some(g) => gauge = g,
-                None => {
-                    eprintln!("--gauge は groove|easy|hard|death|pattack|gattack");
-                    std::process::exit(2);
-                }
-            }
-        } else {
-            chart_path = Some(PathBuf::from(a));
+            "--offset" => options.judge_offset = number(),
+            "--auto" => options.auto = true,
+            _ if a.starts_with("--") => usage(),
+            _ => chart_path = Some(PathBuf::from(a)),
         }
     }
+    let options = options.clamped();
     let Some(chart_path) = chart_path else {
-        eprintln!(
-            "使い方: reprise <譜面ファイル> [--gauge groove|easy|hard|death|pattack|gattack] [--skin <スキン> [--skin-root <フォルダ>]]"
-        );
-        std::process::exit(2);
+        usage();
     };
     let _ = score_importers();
     let skin = match skin_path.map(|p| load_skin(&p, skin_root)).transpose() {
@@ -303,10 +320,13 @@ fn main() {
             .enumerate()
             .map(|(i, (_, lane))| (i as KeyId, Lane(*lane))),
     );
-    let Some(session) = PlaySession::new(&chart, gauge, input) else {
+    let Some(mut session) = PlaySession::new(&chart, gauge, input) else {
         eprintln!("LR2 にこのゲージは無い");
         std::process::exit(2);
     };
+    if options.auto {
+        session.set_autoplay(options.judge_offset as i64);
+    }
     let title = format!("reprise - {} [{}]", chart.meta.title, chart.meta.artist);
     let (skin_play, pending_images) = match skin {
         Some((skin, mut images)) => {
@@ -328,6 +348,7 @@ fn main() {
                 &skin.options,
                 &lengths,
                 &bga_images,
+                options,
             );
             let sizes = images
                 .iter()
@@ -369,6 +390,7 @@ fn main() {
             session,
             lead_in_ms,
             scratch: [false; 2],
+            control: [false; 2],
             over: false,
             start: None,
             last_judge: None,
@@ -421,6 +443,8 @@ struct Game {
     lead_in_ms: i64,
     /// 皿の 2 つのキー（KEYMAP の 0, 1 番）を押しているか
     scratch: [bool; 2],
+    /// START・SELECT を押しているか
+    control: [bool; 2],
     /// 場面が終わった（結果を出す）
     over: bool,
     /// 最初のフレームで決める（起動にかかった時間で先頭を取りこぼさないように）
@@ -557,25 +581,51 @@ impl AudioOutput for BevyAudio<'_, '_, '_> {
 fn play_frame(
     mut commands: Commands,
     mut keys: MessageReader<KeyboardInput>,
+    mut wheel: MessageReader<MouseWheel>,
     mut game: ResMut<Game>,
     mut exit: MessageWriter<AppExit>,
 ) {
     let mut events: Vec<(KeyId, bool)> = vec![];
+    // START・SELECT は前のフレームから押し続けているかを見る
+    let mut ctrl = ControlInput {
+        start_held: game.control[0],
+        select_held: game.control[1],
+        ..Default::default()
+    };
     for k in keys.read() {
         if k.repeat {
             continue;
         }
-        if k.key_code == KeyCode::Escape && k.state == ButtonState::Pressed {
+        let down = k.state == ButtonState::Pressed;
+        if k.key_code == KeyCode::Escape && down {
             exit.write(AppExit::Success);
         }
+        for (i, code) in [START, SELECT].into_iter().enumerate() {
+            if k.key_code == code {
+                game.control[i] = down;
+                if down {
+                    if i == 0 {
+                        ctrl.start_pressed = true;
+                    } else {
+                        ctrl.select_pressed = true;
+                    }
+                }
+            }
+        }
         if let Some(i) = KEYMAP.iter().position(|(code, _)| *code == k.key_code) {
-            let down = k.state == ButtonState::Pressed;
             events.push((i as KeyId, down));
             if i < 2 {
                 game.scratch[i] = down;
             }
+            let lane = KEYMAP[i].1;
+            if down && (1..=7).contains(&lane) {
+                ctrl.keys_pressed[lane as usize - 1] = true;
+            }
         }
     }
+    ctrl.start_held &= game.control[0];
+    ctrl.select_held &= game.control[1];
+    ctrl.wheel = wheel.read().map(|w| w.y.signum() as i32).sum();
     if game.start.is_none() {
         game.start = Some(Instant::now());
     }
@@ -591,6 +641,7 @@ fn play_frame(
         sp.play
             .set_scratch(game.scratch[1] as i32 - game.scratch[0] as i32);
         sp.play.update(t, &game.session, &out);
+        sp.play.control(&ctrl);
         if sp.play.scene_over() {
             game.over = true;
         }
@@ -628,10 +679,10 @@ fn draw_skin(
     let Some(sp) = game.skin.as_mut() else {
         return;
     };
-    let ppb = pixels_per_beat(HI_SPEED);
-    let visible = sp.skin.resolution.1 as f64 * 2.0 / ppb;
     let tremble = sp.rng.get_rand(2) as i32;
-    let mut view = sp.play.view(&game.session, HI_SPEED, visible, tremble);
+    // 画面の高さの 2 倍先まで
+    let visible = sp.skin.resolution.1 as f64 * 2.0;
+    let mut view = sp.play.view(&game.session, visible, tremble);
     // 途中終了したらノーツは描かない
     if game.session.play().is_dead() {
         view.notes.clear();
