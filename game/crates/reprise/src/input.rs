@@ -76,6 +76,11 @@ impl SlotInput {
     pub fn held_any(&self, slot: usize) -> bool {
         self.p1.held[slot] || self.p2.held[slot]
     }
+    /// 1P か 2P の操作 `slot` をこのフレームで離した（どちらも押していない）
+    pub fn released_any(&self, slot: usize) -> bool {
+        let up = |s: &Slots| s.events.contains(&(slot, false));
+        (up(&self.p1) || up(&self.p2)) && !self.held_any(slot)
+    }
 }
 
 pub fn read_input(

@@ -96,6 +96,10 @@ pub fn scan_library(
                 continue;
             };
             if let Ok((c, _)) = load_chart(loaders, &e.path, &bytes, 0) {
+                let timing = domain::play::TimingMap::from_chart(&c);
+                let notes =
+                    domain::play::Lr2Play::new(&c, &timing, domain::play::GaugeType::Groove)
+                        .map_or(0, |p| p.total_notes());
                 songs.push(SongInfo {
                     path: e.path,
                     hash: c.hash,
@@ -104,8 +108,9 @@ pub fn scan_library(
                     artist: c.meta.artist,
                     genre: c.meta.genre,
                     level: c.meta.level.unwrap_or(0),
-                    difficulty: c.meta.difficulty.unwrap_or(0),
+                    difficulty: c.meta.difficulty.unwrap_or(-1),
                     key_mode: c.key_mode,
+                    notes,
                 });
             }
         }
@@ -418,7 +423,14 @@ mod tests {
         ]);
         let ls: Vec<Box<dyn ChartLoader>> = vec![Box::new(BytesLoader)];
         let lib = scan_library(&fs, &ls, &[PathBuf::from("/r"), PathBuf::from("/r2")]);
-        let bars = lib.open(Path::new(open)).unwrap();
+        let mut all = domain::select::ListFilter {
+            key: 0,
+            ..Default::default()
+        };
+        let bars = lib
+            .open(Path::new(open), &mut all, &|_| Default::default())
+            .unwrap()
+            .bars;
         let got: Vec<String> = bars
             .iter()
             .map(|b| match b {
