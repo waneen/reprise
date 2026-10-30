@@ -25,7 +25,7 @@ cd game && cargo run -p reprise --release -- path/to/chart.bms [--gauge groove|e
 
 スキン描画は画像・数字・ゲージ・判定とコンボ・ノーツ（LN・地雷）・小節線・BARGRAPH・SLIDER・皿の回転・合成モード（加算・減算・乗算など）・フィルタ・場面の時間（`#STARTINPUT`・`#FADEOUT` など）・文字列（画像フォント `.lr2font` と OS のフォント）・BGA（画像。1 層目・2 層目・POOR 層）に対応し、曲が終わるか途中終了すると結果を文字で出します。BGA の動画・2P 側・EFFECT の HIDDEN/SUDDEN などは描きません（[ARCHITECTURE.md](ARCHITECTURE.md#lr2-互換の根拠)）。
 
-Linux では Bevy のために `libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev` が必要です。
+Linux では Bevy のために `libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libfontconfig-dev` が必要です。
 
 各 workspace で `cargo test`。CI は Linux / Windows / macOS でのテストと lint だけを行います。他アーキテクチャ向けのクロスビルドは手元で `bash tools/cross-build.sh <target>` を実行します（準備はスクリプト冒頭に記載）。`v*` タグで6ターゲットのバイナリを Release に添付します。
 
