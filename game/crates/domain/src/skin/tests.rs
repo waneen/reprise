@@ -935,3 +935,30 @@ fn dom_skd_18_mouse(
     )
     .is_empty());
 }
+
+/// DOM-SKD-20: キー設定画面は場面によらない要素（IMAGE・BUTTON など）だけを描き、曲バー・ノーツなどは描かない
+#[rstest]
+#[case::image_and_button(vec![(0, 100.0)], Some(2), vec![[100.0, 0.0, 8.0, 8.0], [100.0, 100.0, 40.0, 20.0]])]
+#[case::unknown_button(vec![(0, 100.0)], None, vec![[100.0, 0.0, 8.0, 8.0]])]
+#[case::nothing(vec![], None, vec![])]
+fn dom_skd_20_keyconfig(
+    #[case] images: Vec<(u32, f32)>,
+    #[case] button: Option<i32>,
+    #[case] want: Vec<[f32; 4]>,
+) {
+    let mut sk = bar_skin(images.iter().map(|&(o, x)| img(o, x)).collect());
+    sk.elements
+        .extend(button_skin([140, 1, 0, 0, 0], vec![], 0).elements);
+    let s = BtnSt(st(&[(0, 0)]), button);
+    let got: Vec<Quad> = draw_keyconfig(&sk, &s, &size)
+        .into_iter()
+        .filter_map(|d| match d {
+            Draw::Quad(q) => Some(q),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(dsts(&got), want);
+    if button.is_some() {
+        assert_eq!(got.last().unwrap().src[0], 20.0);
+    }
+}
