@@ -34,6 +34,8 @@ pub struct PlayView {
     /// ハイスピード（×100。LR2 の既定は 200）
     pub hi_speed: f64,
     pub notes: Vec<NoteView>,
+    /// 小節線（判定までの拍数）
+    pub lines: Vec<f64>,
 }
 
 /// 描くノーツ
@@ -543,6 +545,7 @@ pub fn draw_play(
                     cx.object(e, 0.0, 0.0);
                 }
                 "GROOVEGAUGE" if *index == 0 => gauge(&mut cx, e, view),
+                "LINE" if *index == 0 && playing => lines(&mut cx, e, view),
                 "NOWJUDGE_1P" if playing && view.judge == Some(*index as usize) => {
                     judge_combo(&mut cx, e, view)
                 }
@@ -554,6 +557,24 @@ pub fn draw_play(
     }
     cx.out.sort_by_key(|s| (s.order, s.sub));
     cx.out.into_iter().map(|s| s.q).collect()
+}
+
+/// DOM-SKD-11: 小節線。DST_LINE の位置から 拍数 × [`pixels_per_beat`] 上に、判定位置を過ぎていないものだけ描く。α は 255
+fn lines(cx: &mut Ctx<'_>, e: &Element, view: &PlayView) {
+    let (Some(s), Some(mut base)) = (e.source.as_ref(), pose_at(e, cx.st.timer(e.timer.0))) else {
+        return;
+    };
+    base.argb[0] = 255.0;
+    let ppb = pixels_per_beat(view.hi_speed) as f32;
+    let f = src_frame(s, src_time(cx.st, e, s));
+    for &b in view.lines.iter().filter(|b| **b >= 0.0) {
+        let mut p = base;
+        p.dst[1] -= b as f32 * ppb;
+        if p.dst[1] + p.dst[3].abs() < 0.0 {
+            continue;
+        }
+        cx.push(e, 0, s, f, &p);
+    }
 }
 
 /// DOM-SKD-08: 50 区間を SRC の引数 1, 2 だけずらしながら描く
