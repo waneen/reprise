@@ -12,8 +12,8 @@ fn dir() -> TempDir {
     tempfile::tempdir().unwrap()
 }
 
-/// (hash, clear, perfect, great, good, bad, poor, maxcombo, minbp, playcount)
-type Row<'a> = (&'a str, i64, i64, i64, i64, i64, i64, i64, i64, i64);
+/// (hash, clear, perfect, great, good, bad, poor, maxcombo, minbp, playcount, clearcount)
+type Row<'a> = (&'a str, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64);
 
 fn db(dir: &TempDir, rows: &[Row]) -> std::path::PathBuf {
     let p = dir.path().join("player.db");
@@ -21,15 +21,15 @@ fn db(dir: &TempDir, rows: &[Row]) -> std::path::PathBuf {
     c.execute(CREATE, []).unwrap();
     for r in rows {
         c.execute(
-            "INSERT INTO score(hash,clear,perfect,great,good,bad,poor,maxcombo,minbp,playcount) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-            rusqlite::params![r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9],
+            "INSERT INTO score(hash,clear,perfect,great,good,bad,poor,maxcombo,minbp,playcount,clearcount) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            rusqlite::params![r.0, r.1, r.2, r.3, r.4, r.5, r.6, r.7, r.8, r.9, r.10],
         )
         .unwrap();
     }
     p
 }
 fn row(hash: &str) -> Row<'_> {
-    (hash, 2, 100, 50, 5, 2, 3, 120, 7, 9)
+    (hash, 2, 100, 50, 5, 2, 3, 120, 7, 9, 4)
 }
 fn import_one(dir: &TempDir, r: Row) -> Option<ScoreRecord> {
     Lr2ScoreDb.import(&db(dir, &[r])).unwrap().pop()
@@ -103,20 +103,24 @@ fn imp_lr2_04_judges_and_ex(dir: TempDir, #[case] j: (i64, i64, i64, i64, i64), 
 
 /// IMP-LR2-05: コンボ・BP・回数
 #[rstest]
-#[case::plain(120, 7, 9, (120, Some(7), 9))]
-#[case::negative_minbp_unknown(120, -1, 9, (120, None, 9))]
-#[case::negative_counts_zero(-5, 0, -2, (0, Some(0), 0))]
+#[case::plain(120, 7, 9, 4, (120, Some(7), 9, 4))]
+#[case::negative_minbp_unknown(120, -1, 9, 4, (120, None, 9, 4))]
+#[case::negative_counts_zero(-5, 0, -2, -1, (0, Some(0), 0, 0))]
 fn imp_lr2_05_combo_bp_plays(
     dir: TempDir,
     #[case] combo: i64,
     #[case] minbp: i64,
     #[case] plays: i64,
-    #[case] expected: (u32, Option<u32>, u32),
+    #[case] clears: i64,
+    #[case] expected: (u32, Option<u32>, u32, u32),
 ) {
     let mut r = row(MD5);
-    (r.7, r.8, r.9) = (combo, minbp, plays);
+    (r.7, r.8, r.9, r.10) = (combo, minbp, plays, clears);
     let got = import_one(&dir, r).unwrap();
-    assert_eq!((got.max_combo, got.min_bp, got.play_count), expected);
+    assert_eq!(
+        (got.max_combo, got.min_bp, got.play_count, got.clear_count),
+        expected
+    );
 }
 
 /// IMP-LR2-06: ルール・出自

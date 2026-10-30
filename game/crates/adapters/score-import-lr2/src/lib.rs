@@ -11,7 +11,7 @@
 //! | IMP-LR2-02 | `hash` は譜面ファイルの MD5（16 進 32 文字）。長さが違うもの（コース）と 16 進でないものは取り込まない |
 //! | IMP-LR2-03 | clear: 0=NoPlay 1=Failed 2=Easy 3=Normal 4=Hard 5=FullCombo、それ以外は NoPlay |
 //! | IMP-LR2-04 | 判定内訳は perfect/great/good/bad/poor をそのまま、EX スコア = perfect×2 + great |
-//! | IMP-LR2-05 | maxcombo・playcount はそのまま（負は 0）、minbp は負なら不明（None） |
+//! | IMP-LR2-05 | maxcombo・playcount・clearcount はそのまま（負は 0）、minbp は負なら不明（None） |
 //! | IMP-LR2-06 | ルールは `Lr2`、出自は `ImportedFrom("LR2")`、SHA-256 は不明（None） |
 use application::ports::{PortError, ScoreImporter};
 use domain::chart::ChartHash;
@@ -60,14 +60,14 @@ impl ScoreImporter for Lr2ScoreDb {
         let db = Connection::open_with_flags(src, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(io)?;
         let mut st = db
             .prepare(
-                "SELECT hash, clear, perfect, great, good, bad, poor, maxcombo, minbp, playcount FROM score",
+                "SELECT hash, clear, perfect, great, good, bad, poor, maxcombo, minbp, playcount, clearcount FROM score",
             )
             .map_err(io)?;
         let rows = st
             .query_map([], |r| {
                 Ok((
                     r.get::<_, Option<String>>(0)?,
-                    (2..10)
+                    (2..11)
                         .map(|i| r.get::<_, Option<i64>>(i).map(|v| v.unwrap_or(0)))
                         .collect::<Result<Vec<i64>, _>>()?,
                     r.get::<_, Option<i64>>(1)?.unwrap_or(0),
@@ -80,7 +80,7 @@ impl ScoreImporter for Lr2ScoreDb {
             let Some(md5) = hash.as_deref().and_then(md5_of) else {
                 continue;
             };
-            let [pg, gr, gd, bd, pr, combo, minbp, plays] = v[..] else {
+            let [pg, gr, gd, bd, pr, combo, minbp, plays, clears] = v[..] else {
                 unreachable!()
             };
             out.push(ScoreRecord {
@@ -96,6 +96,7 @@ impl ScoreImporter for Lr2ScoreDb {
                 max_combo: count(combo),
                 min_bp: (minbp >= 0).then(|| count(minbp)),
                 play_count: count(plays),
+                clear_count: count(clears),
                 origin: ScoreOrigin::ImportedFrom("LR2".into()),
             });
         }
