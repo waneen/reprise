@@ -4,7 +4,9 @@
 //! 使い方: `reprise --songs <フォルダ> [オプション]` で選曲から、`reprise <譜面ファイル> [オプション]` でその譜面のプレイから（オプションは [`USAGE`]）。
 //! 1P の 7 鍵（5 鍵）のプレイ画面。`--skin` で LR2 のプレイスキンで描き、無ければ四角形だけで描く。
 //! `--skin-root` はスキン中のパスの基準（LR2 なら LR2 本体のフォルダ。既定は今のフォルダ）。
-//! 記録は `--data` のフォルダ（既定は今のフォルダの `reprise-data`）の `score.db` に保存する。
+//! 記録は `--data` のフォルダ（既定は今のフォルダの `reprise-data`）の `score.db` に、設定は `config.json` に保存する
+//! （起動引数で渡した設定も保存するので、次からは引数無しで選曲から始められる）。
+mod input;
 mod platform;
 mod select_scene;
 mod skin_render;
@@ -13,6 +15,7 @@ use application::play::{KeyId, KeyInput, PlaySession, VisibleNote};
 use application::play_options::{ControlInput, PlayOptions};
 use application::play_skin::PlaySkin;
 use application::ports::{AudioOutput, ChartLoader, FileSystem, SkinLoader};
+use application::settings::Settings;
 use application::usecase::SavedScore;
 use bevy::asset::RenderAssetUsages;
 use bevy::audio::AudioSource;
@@ -20,9 +23,7 @@ use bevy::camera::visibility::NoFrustumCulling;
 use bevy::camera::{OrthographicProjection, Projection, ScalingMode};
 use bevy::ecs::system::RunSystemOnce;
 use bevy::image::ImageSampler;
-use bevy::input::keyboard::KeyboardInput;
 use bevy::input::mouse::MouseWheel;
-use bevy::input::ButtonState;
 use bevy::platform::time::Instant;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
@@ -33,6 +34,7 @@ use bevy::window::{PresentMode, WindowResolution};
 use chart_loader::DecoderLoader;
 use domain::chart::ChartHash;
 use domain::chart::{Chart, ImageId, Lane, SoundId};
+use domain::input::{SELECT, START};
 use domain::play::RulesetId;
 use domain::play::{GaugeType, HsFix, Judge, PlayEvent};
 use domain::random::LegacyMt;
@@ -53,27 +55,14 @@ const LEAD_IN_MS: i64 = 2000;
 /// 判定ラインから上端までに見える拍数（スキン無しのとき）
 const VISIBLE_BEATS: f64 = 4.0;
 
-const USAGE: &str = "使い方: reprise (--songs <譜面のフォルダ>... | <譜面ファイル>) [--gauge groove|easy|hard|death|pattack|gattack] [--skin <スキン> [--skin-root <フォルダ>]] \
+const USAGE: &str = "使い方: reprise [--songs <譜面のフォルダ>...] [<譜面ファイル>] [--gauge groove|easy|hard|death|pattack|gattack] [--skin <スキン> [--skin-root <フォルダ>]] \
 [--hs <ハイスピード×100>] [--hsfix off|max|min|avg|const|main] [--cover <0..100>] [--offset <ms>] [--auto] [--data <フォルダ>]";
 
 /// 記録などを置くフォルダの既定（今のフォルダから）
 const DATA_DIR: &str = "reprise-data";
 
-/// 既定のキー配置（1P）。皿は 2 つのキーで左右回転を表す
-const KEYMAP: [(KeyCode, u8); 9] = [
-    (KeyCode::ShiftLeft, 0),
-    (KeyCode::ControlLeft, 0),
-    (KeyCode::KeyZ, 1),
-    (KeyCode::KeyS, 2),
-    (KeyCode::KeyX, 3),
-    (KeyCode::KeyD, 4),
-    (KeyCode::KeyC, 5),
-    (KeyCode::KeyF, 6),
-    (KeyCode::KeyV, 7),
-];
-/// START・SELECT（beatoraja の既定のキー配置に合わせる）
-const START: KeyCode = KeyCode::KeyQ;
-const SELECT: KeyCode = KeyCode::KeyW;
+/// 操作（皿の 2 方向・鍵盤 1〜7）のレーン（1P）。皿は 2 つの操作で左右回転を表す
+const SLOT_LANES: [u8; 9] = [0, 0, 1, 2, 3, 4, 5, 6, 7];
 
 // 画面配置（ピクセル、原点は画面中央）
 const LANE_LEFT: f32 = -560.0;
@@ -311,6 +300,22 @@ impl ScoreDb {
     }
 }
 
+/// 設定と保存先。`saved` は保存する内容（起動引数で渡したものも含む。譜面の直接指定とオートは除く）
+#[derive(Resource)]
+pub struct SettingsRes {
+    pub saved: Settings,
+    store: Option<platform::Store>,
+}
+
+/// 設定を保存する（保存先が無ければ何もしない）
+pub fn save_settings(s: &SettingsRes) {
+    if let Some(store) = &s.store {
+        if let Err(e) = store.save(&s.saved) {
+            eprintln!("設定を保存できない: {e:?}");
+        }
+    }
+}
+
 /// 一覧などの文字のフォント（ブラウザ版は OS のフォントを探せないので Bevy の既定のフォント。日本語の字は無い）
 pub fn list_font() -> FontSource {
     if cfg!(target_arch = "wasm32") {
@@ -323,40 +328,68 @@ pub fn list_font() -> FontSource {
 fn main() {
     let args = platform::args();
     let fs = platform::file_system();
+    // 先に --data だけ見て設定を読み、ほかの引数で上書きする
+    let data_dir = args
+        .iter()
+        .position(|a| a == "--data")
+        .and_then(|i| args.get(i + 1))
+        .map_or_else(|| PathBuf::from(DATA_DIR), PathBuf::from);
+    let store = platform::settings_store(&data_dir);
+    let mut settings = match store.as_ref().map(|s| s.load()) {
+        Some(Ok(Some(s))) => s,
+        Some(Err(e)) => {
+            eprintln!("設定を読めないので既定値を使う: {e:?}");
+            Settings::default()
+        }
+        _ => Settings::default(),
+    };
     let mut chart_path = None;
-    let mut song_roots = vec![];
-    let mut gauge = GaugeType::Groove;
-    let mut skin_path = None;
-    let mut skin_root = platform::default_skin_root();
-    let mut options = PlayOptions::default();
-    let mut data_dir = PathBuf::from(DATA_DIR);
+    let mut cli_songs = vec![];
+    let mut auto = false;
     let usage = || -> ! { fatal(USAGE, 2) };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().unwrap_or_else(|| usage());
         let mut number = || value().parse::<i32>().unwrap_or_else(|_| usage());
+        let o = &mut settings.options;
         match a.as_str() {
-            "--songs" => song_roots.push(PathBuf::from(value())),
-            "--skin" => skin_path = Some(PathBuf::from(value())),
-            "--skin-root" => skin_root = PathBuf::from(value()),
-            "--gauge" => gauge = parse_gauge(value()).unwrap_or_else(|| usage()),
-            "--hs" => options.hi_speed = number(),
-            "--hsfix" => options.hs_fix = parse_hs_fix(value()).unwrap_or_else(|| usage()),
+            "--songs" => cli_songs.push(PathBuf::from(value())),
+            "--skin" => settings.skin = Some(PathBuf::from(value())),
+            "--skin-root" => settings.skin_root = Some(PathBuf::from(value())),
+            "--gauge" => settings.gauge = parse_gauge(value()).unwrap_or_else(|| usage()),
+            "--hs" => o.hi_speed = number(),
+            "--hsfix" => o.hs_fix = parse_hs_fix(value()).unwrap_or_else(|| usage()),
             "--cover" => {
-                options.lane_cover = true;
-                options.cover = number();
+                o.lane_cover = true;
+                o.cover = number();
             }
-            "--offset" => options.judge_offset = number(),
-            "--auto" => options.auto = true,
-            "--data" => data_dir = PathBuf::from(value()),
+            "--offset" => o.judge_offset = number(),
+            "--auto" => auto = true,
+            "--data" => {
+                value();
+            }
             _ if a.starts_with("--") => usage(),
             _ => chart_path = Some(PathBuf::from(a)),
         }
     }
-    let options = options.clamped();
-    if chart_path.is_none() && song_roots.is_empty() {
+    if !cli_songs.is_empty() {
+        settings.songs = cli_songs;
+    }
+    settings.options = settings.options.clamped();
+    if chart_path.is_none() && settings.songs.is_empty() {
         usage();
     }
+    let settings = SettingsRes {
+        saved: settings,
+        store,
+    };
+    // 起動引数で変えた設定は次の起動にも使う
+    if matches!(settings.store.as_ref().map(|s| s.load()), Some(Ok(ref old)) if old.as_ref() != Some(&settings.saved))
+    {
+        save_settings(&settings);
+    }
+    let s = &settings.saved;
+    let options = PlayOptions { auto, ..s.options };
     #[cfg(not(target_arch = "wasm32"))]
     let _ = platform::score_importers();
     let scores = ScoreDb(platform::open_scores(&data_dir).map(Mutex::new));
@@ -364,10 +397,22 @@ fn main() {
     let library = if direct {
         Library::default()
     } else {
-        let lib = application::usecase::scan_library(fs.as_ref(), &chart_loaders(), &song_roots);
+        let lib = application::usecase::scan_library(fs.as_ref(), &chart_loaders(), &s.songs);
         eprintln!("譜面 {} 件", lib.songs().len());
         lib
     };
+    let boot = Boot {
+        fs,
+        gauge: s.gauge,
+        options,
+        skin_path: s.skin.clone(),
+        skin_root: s
+            .skin_root
+            .clone()
+            .unwrap_or_else(platform::default_skin_root),
+        direct,
+    };
+    let input_map = input::InputMap::new(s.bindings.clone());
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -385,16 +430,16 @@ fn main() {
     }))
     .add_plugins(SkinRenderPlugin)
     .insert_state(if direct { Scene::Play } else { Scene::Select })
-    .insert_resource(Boot {
-        fs,
-        gauge,
-        options,
-        skin_path,
-        skin_root,
-        direct,
-    })
+    .insert_resource(boot)
+    .insert_resource(settings)
+    .insert_resource(input_map)
+    .init_resource::<input::SlotInput>()
     .insert_resource(scores)
     .insert_resource(select_scene::Selection::new(library))
+    .add_systems(
+        PreUpdate,
+        input::read_input.after(bevy::input::InputSystems),
+    )
     .add_systems(OnEnter(Scene::Select), select_scene::enter)
     .add_systems(
         Update,
@@ -483,10 +528,10 @@ fn prepare_play(boot: &Boot, req: &PlayRequest) -> Result<Prepared, String> {
         .transpose()?;
     let (chart, sounds) = load(fs.as_ref(), &req.path)?;
     let input = KeyInput::new(
-        KEYMAP
+        SLOT_LANES
             .iter()
             .enumerate()
-            .map(|(i, (_, lane))| (i as KeyId, Lane(*lane))),
+            .map(|(i, lane)| (i as KeyId, Lane(*lane))),
     );
     let gauge = boot.gauge;
     let mut session =
@@ -578,7 +623,7 @@ struct Game {
     session: PlaySession,
     /// 画面の開始から譜面の先頭までの時間
     lead_in_ms: i64,
-    /// 皿の 2 つのキー（KEYMAP の 0, 1 番）を押しているか
+    /// 皿の 2 つの操作（上・下）を押しているか
     scratch: [bool; 2],
     /// START・SELECT を押しているか
     control: [bool; 2],
@@ -744,7 +789,7 @@ fn leave_play(
 /// 1 ループ = 1 フレーム。入力を読んで `PlaySession` を進める
 fn play_frame(
     mut commands: Commands,
-    mut keys: MessageReader<KeyboardInput>,
+    input: Res<input::SlotInput>,
     mut wheel: MessageReader<MouseWheel>,
     mut game: ResMut<Game>,
     mut scores: ResMut<ScoreDb>,
@@ -756,32 +801,22 @@ fn play_frame(
         select_held: game.control[1],
         ..Default::default()
     };
-    for k in keys.read() {
-        if k.repeat {
+    for &(slot, down) in &input.events {
+        if slot == START || slot == SELECT {
+            let i = slot - START;
+            game.control[i] = down;
+            if down && i == 0 {
+                ctrl.start_pressed = true;
+            } else if down {
+                ctrl.select_pressed = true;
+            }
             continue;
         }
-        let down = k.state == ButtonState::Pressed;
-        for (i, code) in [START, SELECT].into_iter().enumerate() {
-            if k.key_code == code {
-                game.control[i] = down;
-                if down {
-                    if i == 0 {
-                        ctrl.start_pressed = true;
-                    } else {
-                        ctrl.select_pressed = true;
-                    }
-                }
-            }
-        }
-        if let Some(i) = KEYMAP.iter().position(|(code, _)| *code == k.key_code) {
-            events.push((i as KeyId, down));
-            if i < 2 {
-                game.scratch[i] = down;
-            }
-            let lane = KEYMAP[i].1;
-            if down && (1..=7).contains(&lane) {
-                ctrl.keys_pressed[lane as usize - 1] = true;
-            }
+        events.push((slot as KeyId, down));
+        if slot < 2 {
+            game.scratch[slot] = down;
+        } else if down {
+            ctrl.keys_pressed[slot - 2] = true;
         }
     }
     ctrl.start_held &= game.control[0];

@@ -37,4 +37,5 @@ pub mod play;
 pub mod play_options;
 pub mod play_skin;
 pub mod ports;
+pub mod settings;
 pub mod usecase;
