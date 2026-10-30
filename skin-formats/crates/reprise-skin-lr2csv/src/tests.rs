@@ -546,6 +546,7 @@ fn skn_src_02_kind_params(#[case] name: &str, #[case] expected: ElementKind) {
 #[rstest]
 #[case::editable("#SRC_TEXT,0,2,10,1,1", FontRef(2), ValueRef(10), 1, true)]
 #[case::plain("#SRC_TEXT,0,0,12,0", FontRef(0), ValueRef(12), 0, false)]
+#[case::bar_title("#SRC_BAR_TITLE,1,3,0,2", FontRef(3), ValueRef(0), 2, false)]
 fn skn_src_03_text(
     #[case] line: &str,
     #[case] font: FontRef,
@@ -625,6 +626,7 @@ fn skn_dst_03_keyframe_fields(#[case] line: &str, #[case] expected: Keyframe) {
 #[rstest]
 #[case::bar_body_on("#SRC_BAR_BODY,0,0,0,0,1,1,1,1,0,0\n#DST_BAR_BODY_ON,0,0,1,1,1,1\n", vec!["BAR_BODY", "BAR_BODY_ON"])]
 #[case::exact_name_preferred("#SRC_BAR_BODY,0,0,0,0,1,1,1,1,0,0\n#DST_BAR_BODY,0,0,1,1,1,1\n", vec!["BAR_BODY"])]
+#[case::per_index("#SRC_BAR_BODY,0,0,0,0,1,1,1,1,0,0\n#DST_BAR_BODY_OFF,0,0,1,1,1,1\n#DST_BAR_BODY_OFF,1,0,2,2,1,1\n#DST_BAR_BODY_OFF,0,100,3,3,1,1\n", vec!["BAR_BODY", "BAR_BODY_OFF", "BAR_BODY_OFF"])]
 fn skn_dst_04_prefix_fallback(#[case] body: &str, #[case] commands: Vec<&str>) {
     let d = lr2(body);
     assert_eq!(
@@ -634,6 +636,16 @@ fn skn_dst_04_prefix_fallback(#[case] body: &str, #[case] commands: Vec<&str>) {
             .collect::<Vec<_>>(),
         commands
     );
+    // 複製した要素は添字ごとに別で、同じ添字の DST だけがキーフレームになる
+    let xs: Vec<(i32, Vec<f32>)> = d
+        .elements
+        .iter()
+        .filter(|e| e.command == "BAR_BODY_OFF")
+        .map(|e| (e.index, e.keyframes.iter().map(|k| k.rect[0]).collect()))
+        .collect();
+    if !xs.is_empty() {
+        assert_eq!(xs, vec![(0, vec![1.0, 3.0]), (1, vec![2.0])]);
+    }
 }
 
 /// SKN-DST-05: 描画順は最初の DST 行の順番（飛ばした行・#IF 系の行は数えない）

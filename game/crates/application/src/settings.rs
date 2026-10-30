@@ -10,6 +10,8 @@ pub struct Settings {
     pub songs: Vec<PathBuf>,
     /// プレイスキン
     pub skin: Option<PathBuf>,
+    /// 選曲スキン（無ければ文字の一覧）
+    pub select_skin: Option<PathBuf>,
     /// スキン中のパスの基準（LR2 本体のフォルダ）
     pub skin_root: Option<PathBuf>,
     pub gauge: GaugeType,
@@ -23,6 +25,7 @@ impl Default for Settings {
         Self {
             songs: vec![],
             skin: None,
+            select_skin: None,
             skin_root: None,
             gauge: GaugeType::Groove,
             options: PlayOptions::default(),
