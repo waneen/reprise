@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+pub mod flip;
 pub mod lr2;
 #[cfg(test)]
 mod tests;
