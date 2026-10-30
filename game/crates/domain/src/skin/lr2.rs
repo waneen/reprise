@@ -1,4 +1,4 @@
-//! LR2 のプレイ画面・選曲画面のスキン描画（DOM-SKD-*）。どの要素を・どこに・どの切り出しで描くかを決め、
+//! LR2 のプレイ画面・選曲画面・キー設定画面のスキン描画（DOM-SKD-*）。どの要素を・どこに・どの切り出しで描くかを決め、
 //! 描画 API には依存しない四角形・単色の四角形・システムフォントの文字列の列（[`Draw`]）を返す。OpenLR2 の `LR2_skindraw.cpp`・`Main.cpp`・
 //! `Scene04_Play.cpp`・`Scene02_Songselect.cpp`・`LR2_skinobject.cpp`・`LR2_skinload.cpp` を仕様として参照した（コードは転載していない）。
 use super::{Blend, Element, ElementKind, ImageFont, Keyframe, Skin, SourceRect, SystemFont};
@@ -1133,6 +1133,25 @@ pub fn draw_select(
         common(&mut cx, e);
     }
     select_bars(&mut cx, view);
+    cx.out.sort_by_key(|s| (s.order, s.sub));
+    cx.out.into_iter().map(|s| s.d).collect()
+}
+
+/// キー設定画面を描くものを、奥から順に返す（DOM-SKD-20）。場面に固有の部品は無く、場面によらない要素だけを描く
+pub fn draw_keyconfig(
+    skin: &Skin,
+    st: &dyn SkinState,
+    image_size: &dyn Fn(u32) -> Option<(u32, u32)>,
+) -> Vec<Draw> {
+    let mut cx = Ctx {
+        skin,
+        st,
+        image_size,
+        out: vec![],
+    };
+    for e in &skin.elements {
+        common(&mut cx, e);
+    }
     cx.out.sort_by_key(|s| (s.order, s.sub));
     cx.out.into_iter().map(|s| s.d).collect()
 }
