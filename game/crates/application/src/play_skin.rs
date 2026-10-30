@@ -3,9 +3,11 @@
 //! 番号の意味は OpenLR2 の `LR2_skinobject.cpp`・`Scene04_Play.cpp`・`LR2_gameloop.cpp` を仕様として参照した。
 use crate::play::PlaySession;
 use crate::play_options::{ControlInput, OptionState, PlayOptions};
+use crate::result_skin::PlayResult;
+use crate::usecase::SavedScore;
 use domain::chart::{Beat, BgaLayer, Chart, ImageId, KeyMode, NoteKind, SoundId, TimingEvent};
 use domain::play::scroll::{position_at, position_of, speed_multiplier, UNITS_PER_BEAT};
-use domain::play::{GaugeType, Judge, KeyState, PlayEvent};
+use domain::play::{GaugeGraph, GaugeType, Judge, KeyState, PlayEvent};
 use domain::skin::lr2::{pixels_per_beat, BgaView, NoteView, PlayView, SkinState};
 use domain::skin::SceneTiming;
 use std::collections::{BTreeMap, BTreeSet};
@@ -113,6 +115,9 @@ pub struct PlaySkin {
     opts: OptionState,
     /// HS-FIX の倍率
     hs_mult: f64,
+    /// リザルトのゲージグラフ（APP-SKN-13）と、終わりまで埋めたか
+    graph: GaugeGraph,
+    graph_done: bool,
 }
 
 impl PlaySkin {
@@ -217,6 +222,8 @@ impl PlaySkin {
         let hp = session.play().gauge();
         let hs_mult = speed_multiplier(chart, tm, options.hs_fix);
         let mut s = Self {
+            graph: GaugeGraph::new(hp),
+            graph_done: false,
             opts: OptionState::new(options),
             hs_mult,
             texts,
@@ -407,6 +414,15 @@ impl PlaySkin {
             self.reset(44);
         }
         self.shown_hp = even;
+        // ゲージグラフ（APP-SKN-13）: 記録し、途中終了か曲の終わりで残りを埋める（片付いていないノーツがあれば 0）
+        if !self.graph_done {
+            self.graph.log(t_ms, self.runtime_ms, hp);
+            if play.is_dead() || t_ms > self.runtime_ms {
+                let unfinished = play.processed() < play.total_notes();
+                self.graph.finish(if unfinished { 0.0 } else { hp });
+                self.graph_done = true;
+            }
+        }
         if play.is_dead() {
             self.set_once(3);
             self.reset(44);
@@ -488,6 +504,26 @@ impl PlaySkin {
         self.hp = hp;
         self.beat = session.timing().beat_at(t_ms * 1000).0;
         self.combo = play.combo() as i64;
+    }
+
+    /// APP-SKN-13: リザルト画面の材料（文字列 10..15・判定数・HP・ゲージグラフなど）。`saved` は保存した記録の前後
+    pub fn result(&self, session: &PlaySession, saved: Option<SavedScore>) -> PlayResult {
+        let play = session.play();
+        PlayResult {
+            texts: self.texts.clone(),
+            key_mode: self.key_mode,
+            groove: !self.survival,
+            options: self.opts.options,
+            counts: play.counts(),
+            total: play.total_notes(),
+            processed: play.processed(),
+            combo: play.combo(),
+            max_combo: play.max_combo(),
+            hp: play.gauge(),
+            lamp: play.clear_lamp(),
+            graph: self.graph.points().to_vec(),
+            saved,
+        }
     }
 
     /// 曲の進み具合（0..=1）。プレイ開始前は 0
