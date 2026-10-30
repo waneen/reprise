@@ -12,6 +12,8 @@ pub struct Settings {
     pub skin: Option<PathBuf>,
     /// 選曲スキン（無ければ文字の一覧）
     pub select_skin: Option<PathBuf>,
+    /// キー設定スキン（無ければ選曲スキンの BUTTON 13 を押しても何もしない）
+    pub keyconfig_skin: Option<PathBuf>,
     /// スキン中のパスの基準（LR2 本体のフォルダ）
     pub skin_root: Option<PathBuf>,
     pub gauge: GaugeType,
@@ -26,6 +28,7 @@ impl Default for Settings {
             songs: vec![],
             skin: None,
             select_skin: None,
+            keyconfig_skin: None,
             skin_root: None,
             gauge: GaugeType::Groove,
             options: PlayOptions::default(),
