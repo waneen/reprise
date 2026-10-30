@@ -13,6 +13,7 @@
 //! | ADP-CH-07 | `#RANDOM` は注入された `LegacyMt` で引く（`GetRand(n-1)+1`） |
 //! | ADP-CH-08 | 小節長の変化は `TimingEvent::Measure` として小節番号順に出す |
 //! | ADP-CH-09 | 音ファイルの解決（LR2 の `FindAltSound`）: 譜面のフォルダで書かれた名前、無ければ拡張子を ogg → wav → flac → mp3 に替えた名前（名前に既にその拡張子を含むものは飛ばす）、それも無ければ 1 つ上のフォルダの書かれた名前。名前の `\` は区切りとみなし、大小は区別しない |
+//! | ADP-CH-10 | 画像ファイルの解決（LR2 の `FindAltImage`）: 譜面のフォルダで書かれた名前、無ければ末尾 3 文字を png → jpg → bmp に替えた名前（名前に既にその拡張子を含むものは飛ばす）。無ければ 1 つ上のフォルダで同じ順に探す。大小は区別しない |
 use application::ports::{ChartLoader, PortError};
 use domain::{chart::*, random::LegacyMt};
 use md5::{Digest, Md5};
@@ -251,6 +252,28 @@ pub fn find_sound_file(chart_dir: &Path, name: &str) -> Option<PathBuf> {
         }
     }
     find_rel(chart_dir.parent()?, name)
+}
+
+/// 譜面の画像ファイル（BGA）を探す（ADP-CH-10）
+pub fn find_image_file(chart_dir: &Path, name: &str) -> Option<PathBuf> {
+    let lower = name.to_ascii_lowercase();
+    let mut names = vec![name.to_string()];
+    if let Some(stem) = name
+        .len()
+        .checked_sub(3)
+        .filter(|&i| name.is_char_boundary(i))
+        .map(|i| &name[..i])
+    {
+        for ext in ["png", "jpg", "bmp"] {
+            if !lower.contains(&format!(".{ext}")) {
+                names.push(format!("{stem}{ext}"));
+            }
+        }
+    }
+    [Some(chart_dir), chart_dir.parent()]
+        .into_iter()
+        .flatten()
+        .find_map(|dir| names.iter().find_map(|n| find_rel(dir, n)))
 }
 
 #[cfg(test)]
