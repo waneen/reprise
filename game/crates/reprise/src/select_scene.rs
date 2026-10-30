@@ -1,7 +1,7 @@
 //! 選曲画面。一覧の作り方とカーソルは `domain::select`。LR2 の選曲スキンがあればそれで描き（`draw_skin`）、
 //! 無ければ文字の一覧で描く（`draw`）。
 //! 操作: 皿（上・下）か ↑↓ で選び、鍵盤 1/3/5/7・Enter・→ で決定、
-//! 鍵盤 6 でオートプレイ、鍵盤 2・← で戻る。最初の一覧で Esc なら終了。
+//! 鍵盤 6 でオートプレイ、鍵盤 2・← で戻る。最初の一覧で Esc なら終了。皿・鍵盤は LR2 と同じく 1P・2P のどちらでもよい。
 //! スキンで描くときは LR2 と同じく、一覧が動くアニメーション・マウスのホイール・マウスでのバーの選択・BUTTON のクリックも受ける
 //! （BUTTON 13 でキー設定画面へ）
 use crate::input::SlotInput;
@@ -139,16 +139,16 @@ pub fn enter(
     ));
 }
 
-/// 操作かキーボードのキーの状態
+/// 1P か 2P の操作かキーボードのキーの状態（LR2 の選曲は 1P と 2P の操作のどちらも受ける）
 fn key_state(
     slots: &SlotInput,
     slot: usize,
     keys: &ButtonInput<KeyCode>,
     code: KeyCode,
 ) -> KeyState {
-    if slots.pressed[slot] || keys.just_pressed(code) {
+    if slots.pressed_any(slot) || keys.just_pressed(code) {
         KeyState::Pressed
-    } else if slots.held[slot] || keys.pressed(code) {
+    } else if slots.held_any(slot) || keys.pressed(code) {
         KeyState::Held
     } else {
         KeyState::Off
@@ -172,9 +172,9 @@ pub fn input(
         sel.state.scroll(d);
         sel.dirty = true;
     }
-    let decide = [1, 3, 5, 7].iter().any(|&n| slots.pressed[key_slot(n)])
+    let decide = [1, 3, 5, 7].iter().any(|&n| slots.pressed_any(key_slot(n)))
         || keys.any_just_pressed([KeyCode::Enter, KeyCode::ArrowRight]);
-    let auto = slots.pressed[key_slot(6)];
+    let auto = slots.pressed_any(key_slot(6));
     if decide || auto {
         match sel.state.decide(&sel.library) {
             Decided::Song(i) => {
@@ -189,7 +189,7 @@ pub fn input(
             Decided::Nothing => {}
         }
     }
-    if (slots.pressed[key_slot(2)]
+    if (slots.pressed_any(key_slot(2))
         || keys.any_just_pressed([KeyCode::ArrowLeft, KeyCode::Backspace]))
         && sel.state.back()
     {
@@ -338,10 +338,10 @@ pub fn skin_input(
             bar_slot_dst(&sk.skin, &sc.state, sc.scroll.slot(), true)
                 .is_some_and(|d| mouse_on(d, res, x, y) != 0)
         });
-        let mut decide = [1, 3, 5, 7].iter().any(|&n| slots.pressed[key_slot(n)])
+        let mut decide = [1, 3, 5, 7].iter().any(|&n| slots.pressed_any(key_slot(n)))
             || keys.any_just_pressed([KeyCode::Enter, KeyCode::ArrowRight])
             || (mouse == 1 && on_selected);
-        let mut auto = slots.pressed[key_slot(6)];
+        let mut auto = slots.pressed_any(key_slot(6));
         if mouse == 2 {
             if let Some((x, y)) = pos {
                 for i in 0..30 {
@@ -391,7 +391,7 @@ pub fn skin_input(
                 Decided::Nothing => {}
             }
         }
-        if (slots.pressed[key_slot(2)]
+        if (slots.pressed_any(key_slot(2))
             || keys.any_just_pressed([KeyCode::ArrowLeft, KeyCode::Backspace]))
             && sel.state.back()
         {
