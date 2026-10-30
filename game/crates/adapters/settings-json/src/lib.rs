@@ -215,6 +215,18 @@ pub fn from_json(v: &Value) -> Result<Settings, PortError> {
     Ok(s)
 }
 
+/// `config.json` の中身を読む（ファイル以外に置くとき用。ブラウザ版はページの保存領域に置く）
+pub fn parse(text: &str) -> Result<Settings, PortError> {
+    let v: Value =
+        serde_json::from_str(text).map_err(|e| err(&format!("JSON として読めない: {e}")))?;
+    from_json(&v)
+}
+
+/// `config.json` の中身にする
+pub fn render(settings: &Settings) -> String {
+    serde_json::to_string_pretty(&to_json(settings)).unwrap_or_default()
+}
+
 impl SettingsStore for JsonSettingsFile {
     fn load(&self) -> Result<Option<Settings>, PortError> {
         let text = match std::fs::read_to_string(&self.path) {
@@ -222,15 +234,13 @@ impl SettingsStore for JsonSettingsFile {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(PortError::Io(format!("{}: {e}", self.path.display()))),
         };
-        let v: Value =
-            serde_json::from_str(&text).map_err(|e| err(&format!("JSON として読めない: {e}")))?;
-        from_json(&v).map(Some)
+        parse(&text).map(Some)
     }
     fn save(&self, settings: &Settings) -> Result<(), PortError> {
         if let Some(dir) = self.path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| PortError::Io(e.to_string()))?;
         }
-        let text = serde_json::to_string_pretty(&to_json(settings)).unwrap_or_default();
+        let text = render(settings);
         std::fs::write(&self.path, text)
             .map_err(|e| PortError::Io(format!("{}: {e}", self.path.display())))
     }
