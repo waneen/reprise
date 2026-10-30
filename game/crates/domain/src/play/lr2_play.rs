@@ -2,7 +2,7 @@
 //! OpenLR2 の `Scene04_Play.cpp`（`ProcGame` のフレーム処理・`ProcNoteOnTiming`・`ProcSinglenote`・
 //! `ProcLongnote`・`ApplyJudgeNote`・`ApplyJudgeMine`）、`LR2_bmsload.cpp`（レーンへの配置）、
 //! `LR2_statplay.cpp`（`CheckClear`）を仕様として参照した（コードは転載していない）。
-//! BGM・不可視ノーツは `ProcGame` のオブジェクト処理、キー音は `noteVal` の扱いに従う。
+//! BGM・不可視ノーツは `ProcGame` のオブジェクト処理、キー音は `noteVal` の扱いに従う。オートプレイは `DrawNotes` の判定に従う。
 //! BPM 変化直後の時刻補正（`bpmChangedRealtime`）は未対応。
 use super::{
     lr2::{Lr2Gauge, Lr2Ruleset},
@@ -296,21 +296,7 @@ impl Lr2Play {
         if self.dead {
             return out;
         }
-        // 時刻を過ぎたオブジェクト（BGM・不可視ノーツ）を先に処理する
-        while let Some(&(time, obj)) = self.objects.front() {
-            if time >= t_ms as f64 {
-                break;
-            }
-            self.objects.pop_front();
-            match obj {
-                Object::Bgm(sound) => out.push(PlayEvent::Bgm { sound }),
-                Object::Invisible(lane, sound) => {
-                    if let Some(st) = self.lanes.get_mut(&lane) {
-                        st.sound = sound;
-                    }
-                }
-            }
-        }
+        self.objects(t_ms, &mut out);
         let lanes: Vec<Lane> = self.lanes.keys().copied().collect();
         for lane in lanes {
             let key = keys(lane);
@@ -325,6 +311,71 @@ impl Lr2Play {
             self.dead = true;
         }
         out
+    }
+
+    /// オートプレイの 1 フレーム（DOM-LRP-15）。`t_ms` までのオブジェクトを [`Self::tick`] と同じく処理し、
+    /// 各レーンで時刻が `judge_ms` 以下のノーツをすべて PG にする（LN は始点で押下中にして終端で PG）。
+    /// 地雷は発動させずに消す。キー音はノーツ（LN は始点）を片付けたときに鳴らす
+    pub fn tick_auto(&mut self, t_ms: i64, judge_ms: i64) -> Vec<PlayEvent> {
+        let mut out = vec![];
+        if self.dead {
+            return out;
+        }
+        self.objects(t_ms, &mut out);
+        let t = judge_ms as f64;
+        let lanes: Vec<Lane> = self.lanes.keys().copied().collect();
+        for lane in lanes {
+            while let Some(n) = self.lanes[&lane].notes.front().copied() {
+                if self.lanes[&lane].active.is_none() {
+                    if n.time > t {
+                        break;
+                    }
+                    match n.kind {
+                        Kind::Mine(_) => {
+                            self.pop(lane);
+                            continue;
+                        }
+                        Kind::Normal => {
+                            self.pop(lane);
+                            self.keysound(lane, Some(n), &mut out);
+                            self.score(lane, Judge::PGreat, Some(0), &mut out);
+                            continue;
+                        }
+                        Kind::Long(_) => {
+                            self.lanes.get_mut(&lane).unwrap().active = Some((Judge::PGreat, 0));
+                            self.keysound(lane, Some(n), &mut out);
+                        }
+                    }
+                }
+                match n.kind {
+                    Kind::Long(end) if end <= t => {
+                        self.lanes.get_mut(&lane).unwrap().active = None;
+                        self.pop(lane);
+                        self.score(lane, Judge::PGreat, Some(0), &mut out);
+                    }
+                    _ => break,
+                }
+            }
+        }
+        out
+    }
+
+    /// 時刻を過ぎたオブジェクト（BGM・不可視ノーツ）を処理する（DOM-LRP-13）
+    fn objects(&mut self, t_ms: i64, out: &mut Vec<PlayEvent>) {
+        while let Some(&(time, obj)) = self.objects.front() {
+            if time >= t_ms as f64 {
+                break;
+            }
+            self.objects.pop_front();
+            match obj {
+                Object::Bgm(sound) => out.push(PlayEvent::Bgm { sound }),
+                Object::Invisible(lane, sound) => {
+                    if let Some(st) = self.lanes.get_mut(&lane) {
+                        st.sound = sound;
+                    }
+                }
+            }
+        }
     }
 
     /// 判定を記録に反映する（DOM-LRP-07）
@@ -906,5 +957,34 @@ mod tests {
             .map(|n| (n.lane.0, n.beat.0, n.mine, n.held))
             .collect();
         assert_eq!(got, want);
+    }
+
+    /// DOM-LRP-15: オートプレイ。時刻が判定時刻以下のノーツをすべて PG にし（LN は始点で押下中・終端で PG）、
+    /// 地雷は発動させずに消す。キー音は片付けたノーツ（LN は始点）の音
+    #[rstest]
+    #[case::before(vec![snd(1, 1000, NoteKind::Normal, 5)], &[999], vec![], vec![], vec![false])]
+    #[case::at_time(vec![snd(1, 1000, NoteKind::Normal, 5)], &[1000], vec![Judge::PGreat], vec!["k1:5"], vec![])]
+    #[case::several_in_one_frame(vec![snd(1, 1000, NoteKind::Normal, 5), snd(1, 1100, NoteKind::Normal, 6)], &[1200], vec![Judge::PGreat, Judge::PGreat], vec!["k1:5", "k1:6"], vec![])]
+    #[case::ln_held(vec![Note { sound: Some(SoundId(8)), ..ln(1000, 2000) }], &[1500], vec![], vec!["k1:8"], vec![true])]
+    #[case::ln_end(vec![Note { sound: Some(SoundId(8)), ..ln(1000, 2000) }], &[1500, 2000], vec![Judge::PGreat], vec!["k1:8"], vec![])]
+    #[case::mine_skipped(vec![mine(1000, 50), snd(1, 2000, NoteKind::Normal, 5)], &[1000], vec![], vec![], vec![false])]
+    fn dom_lrp_15_autoplay(
+        #[case] notes: Vec<Note>,
+        #[case] frames: &[i64],
+        #[case] want: Vec<Judge>,
+        #[case] want_sounds: Vec<&str>,
+        #[case] held: Vec<bool>,
+    ) {
+        let c = chart(notes, None);
+        let mut play = Lr2Play::new(&c, &TimingMap::from_chart(&c), GaugeType::Groove).unwrap();
+        let mut ev = vec![];
+        for &t in frames {
+            ev.extend(play.tick_auto(t, t));
+        }
+        assert_eq!(judges(&ev), want);
+        assert_eq!(sounds(&ev), want_sounds);
+        let got: Vec<bool> = play.pending_notes().iter().map(|n| n.held).collect();
+        assert_eq!(got, held);
+        assert_eq!(play.counts().poor, 0);
     }
 }
