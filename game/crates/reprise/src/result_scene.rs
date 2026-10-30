@@ -99,7 +99,7 @@ pub fn enter(
 }
 
 /// LR2 のマウスの右ボタンの状態（`En_input.cpp`: 0 なし・1 押した・2 押し続け・3 離した）
-fn right_state(prev: u8, down: bool) -> u8 {
+pub(crate) fn right_state(prev: u8, down: bool) -> u8 {
     match (down, prev) {
         (false, 0 | 3) => 0,
         (false, _) => 3,
