@@ -1,6 +1,6 @@
-//! LR2 のプレイ画面のスキン描画（DOM-SKD-*）。どの要素を・どこに・どの切り出しで描くかを決め、
+//! LR2 のプレイ画面・選曲画面のスキン描画（DOM-SKD-*）。どの要素を・どこに・どの切り出しで描くかを決め、
 //! 描画 API には依存しない四角形・単色の四角形・システムフォントの文字列の列（[`Draw`]）を返す。OpenLR2 の `LR2_skindraw.cpp`・`Main.cpp`・
-//! `Scene04_Play.cpp`・`LR2_skinload.cpp` を仕様として参照した（コードは転載していない）。
+//! `Scene04_Play.cpp`・`Scene02_Songselect.cpp`・`LR2_skinobject.cpp`・`LR2_skinload.cpp` を仕様として参照した（コードは転載していない）。
 use super::{Blend, Element, ElementKind, ImageFont, Keyframe, Skin, SourceRect, SystemFont};
 
 /// 描画時に問い合わせるゲームの状態（LR2 の番号で引く）
@@ -19,6 +19,10 @@ pub trait SkinState {
     fn turntable(&self, side: i32) -> f32;
     /// 文字列（LR2 の文字列番号）。分からない番号・空は None
     fn text(&self, id: i32) -> Option<&str>;
+    /// BUTTON の状態値（描くコマ）。分からない動作は None で、描かない
+    fn button(&self, _action: i32) -> Option<i32> {
+        None
+    }
 }
 
 /// プレイ画面に固有の描画材料
@@ -513,6 +517,99 @@ impl<'a> Ctx<'a> {
     }
 }
 
+/// 場面によらない要素（DOM-SKD-07, 12, 17）: IMAGE・NUMBER・BARGRAPH・SLIDER・TEXT・BUTTON を条件をすべて満たすときだけ描く
+fn common(cx: &mut Ctx<'_>, e: &Element) {
+    let st = cx.st;
+    if !ops_true(st, e) {
+        return;
+    }
+    match &e.kind {
+        ElementKind::Image => {
+            let side = e.dst_extra[0];
+            if side == 1 || side == 2 {
+                if let (Some(s), Some(mut pose)) =
+                    (e.source.as_ref(), pose_at(e, st.timer(e.timer.0)))
+                {
+                    pose.angle = st.turntable(side);
+                    let f = src_frame(s, src_time(st, e, s));
+                    cx.push(e, 0, s, f, &pose);
+                }
+            } else {
+                cx.object(e, 0.0, 0.0);
+            }
+        }
+        ElementKind::Number {
+            value_ref,
+            digits,
+            align,
+        } => {
+            let v = st.number(*value_ref).unwrap_or(-1);
+            cx.number(e, v, *align, *digits, 0.0, 0.0);
+        }
+        ElementKind::Bar {
+            value_ref,
+            direction,
+        } => {
+            let v = st.bar(*value_ref);
+            if v <= 0.0 {
+                return;
+            }
+            let (Some(s), Some(mut pose)) = (e.source.as_ref(), pose_at(e, st.timer(e.timer.0)))
+            else {
+                return;
+            };
+            let v = v.min(1.0) as f32;
+            match direction {
+                0 => pose.dst[2] *= v,
+                1 => pose.dst[3] *= v,
+                _ => {}
+            }
+            let f = src_frame(s, st.timer(s.timer.0).unwrap_or(-1));
+            cx.push(e, 0, s, f, &pose);
+        }
+        ElementKind::Slider {
+            value_ref,
+            direction,
+            range,
+        } if *range >= 1 => {
+            let off = (st.slider(*value_ref).clamp(0.0, 1.0) * *range as f64) as f32;
+            let (dx, dy) = match direction {
+                0 => (0.0, -off),
+                1 => (off, 0.0),
+                2 => (0.0, off),
+                3 => (-off, 0.0),
+                _ => return,
+            };
+            cx.object(e, dx, dy);
+        }
+        ElementKind::Text {
+            value_ref,
+            font,
+            align,
+        } => {
+            if let Some(s) = st.text(*value_ref).filter(|s| !s.is_empty()) {
+                text(cx, e, s, *font, *align, 0.0, 0.0);
+            }
+        }
+        ElementKind::Button { action } => {
+            if let Some(v) = st.button(*action) {
+                button(cx, e, v);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// DOM-SKD-17: BUTTON は状態値のコマ（コマ数以上なら最後、負なら 0）を DST のタイマーの位置に描く（LR2 `ButtonByInput` の `inArray`）
+fn button(cx: &mut Ctx<'_>, e: &Element, value: i32) {
+    let (Some(s), Some(pose)) = (e.source.as_ref(), pose_at(e, cx.st.timer(e.timer.0))) else {
+        return;
+    };
+    let n = frame_count(s) as i32;
+    let f = if value >= n { n - 1 } else { value.max(0) };
+    cx.push(e, 0, s, f as usize, &pose);
+}
+
 /// プレイ画面を描くものを、奥から順に返す（DOM-SKD-07..12）
 pub fn draw_play(
     skin: &Skin,
@@ -529,65 +626,6 @@ pub fn draw_play(
     let playing = st.timer(41).is_some_and(|t| t > 0);
     for e in &skin.elements {
         match &e.kind {
-            ElementKind::Image if ops_true(st, e) => {
-                let side = e.dst_extra[0];
-                if side == 1 || side == 2 {
-                    if let (Some(s), Some(mut pose)) =
-                        (e.source.as_ref(), pose_at(e, st.timer(e.timer.0)))
-                    {
-                        pose.angle = st.turntable(side);
-                        let f = src_frame(s, src_time(st, e, s));
-                        cx.push(e, 0, s, f, &pose);
-                    }
-                } else {
-                    cx.object(e, 0.0, 0.0);
-                }
-            }
-            ElementKind::Number {
-                value_ref,
-                digits,
-                align,
-            } if ops_true(st, e) => {
-                let v = st.number(*value_ref).unwrap_or(-1);
-                cx.number(e, v, *align, *digits, 0.0, 0.0);
-            }
-            ElementKind::Bar {
-                value_ref,
-                direction,
-            } if ops_true(st, e) => {
-                let v = st.bar(*value_ref);
-                if v <= 0.0 {
-                    continue;
-                }
-                let (Some(s), Some(mut pose)) =
-                    (e.source.as_ref(), pose_at(e, st.timer(e.timer.0)))
-                else {
-                    continue;
-                };
-                let v = v.min(1.0) as f32;
-                match direction {
-                    0 => pose.dst[2] *= v,
-                    1 => pose.dst[3] *= v,
-                    _ => {}
-                }
-                let f = src_frame(s, st.timer(s.timer.0).unwrap_or(-1));
-                cx.push(e, 0, s, f, &pose);
-            }
-            ElementKind::Slider {
-                value_ref,
-                direction,
-                range,
-            } if ops_true(st, e) && *range >= 1 => {
-                let off = (st.slider(*value_ref).clamp(0.0, 1.0) * *range as f64) as f32;
-                let (dx, dy) = match direction {
-                    0 => (0.0, -off),
-                    1 => (off, 0.0),
-                    2 => (0.0, off),
-                    3 => (-off, 0.0),
-                    _ => continue,
-                };
-                cx.object(e, dx, dy);
-            }
             ElementKind::Other { command, index } => match command.as_str() {
                 "JUDGELINE" if *index == 0 => {
                     cx.object(e, 0.0, 0.0);
@@ -602,17 +640,8 @@ pub fn draw_play(
                 }
                 _ => {}
             },
-            ElementKind::Text {
-                value_ref,
-                font,
-                align,
-            } if ops_true(st, e) => {
-                if let Some(s) = st.text(*value_ref).filter(|s| !s.is_empty()) {
-                    text(&mut cx, e, s, *font, *align);
-                }
-            }
             ElementKind::NoteLane { .. } if playing => notes(&mut cx, e, view),
-            _ => {}
+            _ => common(&mut cx, e),
         }
     }
     cx.out.sort_by_key(|s| (s.order, s.sub));
@@ -664,11 +693,13 @@ fn bga(cx: &mut Ctx<'_>, e: &Element, view: &PlayView) {
 
 /// DOM-SKD-12: 文字列。DST の幅・高さが 0 なら描かない。同じ番号の画像フォント（大きさ > 0）があればそれで、
 /// 無ければ同じ番号のシステムフォントで描く。DST の角度は使わない（LR2 はそこにフォント番号を入れる）
-fn text(cx: &mut Ctx<'_>, e: &Element, s: &str, font: u32, align: i32) {
+fn text(cx: &mut Ctx<'_>, e: &Element, s: &str, font: u32, align: i32, dx: f32, dy: f32) {
     let Some(mut pose) = pose_at(e, cx.st.timer(e.timer.0)) else {
         return;
     };
     pose.angle = 0.0;
+    pose.dst[0] += dx;
+    pose.dst[1] += dy;
     let [x, y, w, h] = pose.dst;
     if w == 0.0 || h == 0.0 {
         return;
@@ -910,4 +941,273 @@ fn notes<'a>(cx: &mut Ctx<'a>, ne: &'a Element, view: &PlayView) {
     for (e, sub, s, f, pose) in parts {
         cx.push(e, sub, s, f, &pose);
     }
+}
+
+// ---------------------------------------------------------------------------
+// 選曲画面（DOM-SKD-15..18）
+// ---------------------------------------------------------------------------
+
+/// 選曲の一覧の 1 本（LR2 の `SONGDATA` のうち曲バーを描くのに使うもの）
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct BarView {
+    /// バーの種類（LR2 の `folderType`: 0 = 曲、1 = フォルダ …）。BAR_BODY の添字
+    pub kind: i32,
+    /// 題名（LR2 の `fulltitle`: 題名 + 空白 + 副題）
+    pub title: String,
+    /// 鍵盤数（フォルダは 0）
+    pub key_mode: i32,
+    pub level: i32,
+    /// `#DIFFICULTY`
+    pub difficulty: i32,
+    /// ランプ（LR2 の `clear`: 0 = NO PLAY … 5 = FULL COMBO）
+    pub lamp: i32,
+}
+
+/// 選曲画面に固有の描画材料
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SelectView<'a> {
+    /// 一覧の位置（LR2 の `listCalculatedBar`。1 本 = 1000、0..本数 × 1000）
+    pub position: i64,
+    /// 選んでいるバーを置いたスロット（LR2 の `listSelectedBarFromScreenTop`）
+    pub slot: i32,
+    /// 一覧のすべてのバー
+    pub bars: &'a [BarView],
+}
+
+/// スロット `slot` に出す一覧の添字（LR2: (位置 / 1000 − BAR_CENTER + スロット) を本数で回す）
+pub fn slot_bar(position: i64, center: i32, slot: i32, n: usize) -> Option<usize> {
+    if n == 0 {
+        return None;
+    }
+    let n = n as i64;
+    let mut bar = position / 1000 - center as i64 + slot as i64;
+    while bar < 0 {
+        bar += n;
+    }
+    Some((bar % n) as usize)
+}
+
+/// LR2 の `ByTime`（DSTDbyTime の補間）: v1 = v2 なら v1、t1 ≤ now ≤ t2 なら直線、それ以外は端の値
+fn by_time(v1: f64, v2: f64, t1: f64, t2: f64, now: f64) -> f64 {
+    if v1 == v2 {
+        return v1;
+    }
+    if t1 <= now && now <= t2 && t1 < t2 {
+        let r = (now - t1) / (t2 - t1);
+        return (1.0 - r) * v1 + r * v2;
+    }
+    if now <= t1 {
+        v1
+    } else {
+        v2
+    }
+}
+
+impl<'a> Ctx<'a> {
+    fn find_title(&self, index: i32) -> Option<(&'a Element, u32, i32)> {
+        self.skin.elements.iter().rev().find_map(|e| match e.kind {
+            ElementKind::BarTitle {
+                index: i,
+                font,
+                align,
+            } if i == index => Some((e, font, align)),
+            _ => None,
+        })
+    }
+    /// 名前だけで探す（添字を見ない。`#SRC_BAR_FLASH` は 1 つだけ）
+    fn find_any(&self, command: &str) -> Option<&'a Element> {
+        self.skin
+            .elements
+            .iter()
+            .rev()
+            .find(|e| matches!(&e.kind, ElementKind::Other { command: c, .. } if c == command))
+    }
+}
+
+/// 曲バーのスロットの位置（タイマー 0 で引く。`on` なら BAR_BODY_ON）と描画順。DST が無い・描かない時刻なら None
+fn slot_pose(cx: &Ctx<'_>, slot: i32, on: bool) -> Option<(Pose, u32)> {
+    let name = if on { "BAR_BODY_ON" } else { "BAR_BODY_OFF" };
+    let e = cx.find(name, slot)?;
+    Some((pose_at(e, cx.st.timer(0))?, e.order))
+}
+
+/// DOM-SKD-15, 16, 19: 曲バー（OpenLR2 `Scene02_Songselect.cpp` の曲バーの描画）
+fn select_bars(cx: &mut Ctx<'_>, view: &SelectView<'_>) {
+    let n = view.bars.len();
+    let center = cx.skin.bars.center;
+    let has_off = |cx: &Ctx<'_>, i: i32| {
+        cx.find("BAR_BODY_OFF", i)
+            .is_some_and(|e| !e.keyframes.is_empty())
+    };
+    let frac = view.position % 1000;
+    for i in 1..30 {
+        if !(has_off(cx, i - 1) && has_off(cx, i)) {
+            continue;
+        }
+        let Some(b) = slot_bar(view.position, center, i, n) else {
+            return;
+        };
+        let bar = &view.bars[b];
+        let d1 = slot_pose(cx, i, i == view.slot);
+        let d2 = slot_pose(cx, i - 1, i - 1 == view.slot);
+        let (Some((p1, o1)), Some((p2, o2))) = (d1, d2) else {
+            continue;
+        };
+        // 位置の端数でスロット i と i−1 の間を補間する（合成・フィルタ・中心は i のもの）
+        let (p3, o3) = if frac == 0 {
+            (p1, o1)
+        } else {
+            let f = |a: f32, b: f32| by_time(a as f64, b as f64, 0.0, 1000.0, frac as f64) as f32;
+            let mut p = p1;
+            p.dst = std::array::from_fn(|k| f(p1.dst[k], p2.dst[k]));
+            p.argb = std::array::from_fn(|k| f(p1.argb[k], p2.argb[k]));
+            p.angle = f(p1.angle, p2.angle);
+            (
+                p,
+                by_time(o1 as f64, o2 as f64, 0.0, 1000.0, frac as f64) as u32,
+            )
+        };
+        // 本体: バーの種類の SRC を、その SRC のタイマーでコマ送り
+        if let Some(be) = cx.find("BAR_BODY", bar.kind) {
+            if let Some(s) = be.source.as_ref() {
+                let f = src_frame(s, cx.st.timer(s.timer.0).unwrap_or(-1));
+                if let Some(src) = src_cell(s, (cx.image_size)(s.image), f) {
+                    if let Some(q) = quad(s.image, src, &p3) {
+                        cx.out.push(Sorted {
+                            order: o3,
+                            sub: 0,
+                            d: Draw::Quad(q),
+                        });
+                    }
+                }
+            }
+        }
+        // ほかの部品はバーの位置からの相対（LR2 は整数に切り捨てて足す）
+        let (dx, dy) = (p3.dst[0].trunc(), p3.dst[1].trunc());
+        if i == view.slot {
+            if let Some(fe) = cx.find_any("BAR_FLASH") {
+                cx.object(fe, p1.dst[0].trunc(), p1.dst[1].trunc());
+            }
+        }
+        // 題名は通常（0）だけ（新着（1）は追加日時が無いので使わない）
+        if let Some((te, font, align)) = cx.find_title(0) {
+            if !bar.title.is_empty() {
+                text(cx, te, &bar.title, font, align, dx, dy);
+            }
+        }
+        // レベル: 曲（種類 0・5）で鍵盤数があるとき、#DIFFICULTY の添字（0 未満なら 0）で
+        if (bar.kind == 0 || bar.kind == 5) && bar.key_mode > 0 {
+            let idx = if bar.difficulty >= 0 && bar.kind <= 5 {
+                bar.difficulty
+            } else {
+                0
+            };
+            if let Some(le) = cx.find("BAR_LEVEL", idx) {
+                let (align, digits) = le
+                    .source
+                    .as_ref()
+                    .map_or((0, 0), |s| (s.params[1], s.params[2]));
+                cx.number(le, bar.level as i64, align, digits, dx, dy);
+            }
+        }
+        if let Some(le) = cx.find("BAR_LAMP", bar.lamp) {
+            cx.object(le, dx, dy);
+        }
+    }
+}
+
+/// 選曲画面を描くものを、奥から順に返す（DOM-SKD-07, 12, 15..17）
+pub fn draw_select(
+    skin: &Skin,
+    st: &dyn SkinState,
+    view: &SelectView<'_>,
+    image_size: &dyn Fn(u32) -> Option<(u32, u32)>,
+) -> Vec<Draw> {
+    let mut cx = Ctx {
+        skin,
+        st,
+        image_size,
+        out: vec![],
+    };
+    for e in &skin.elements {
+        common(&mut cx, e);
+    }
+    select_bars(&mut cx, view);
+    cx.out.sort_by_key(|s| (s.order, s.sub));
+    cx.out.into_iter().map(|s| s.d).collect()
+}
+
+/// DOM-SKD-18: マウスが DST の上にあるか（LR2 `MouseOnDSTD`）。画面の外・DST の外は 0、DST の右半分（中央を含む）は 1、左半分は 2
+pub fn mouse_on(dst: [f32; 4], res: (u32, u32), x: i32, y: i32) -> i32 {
+    let [dx, dy, w, h] = dst;
+    let (fx, fy) = (x as f32, y as f32);
+    let inside_screen = (0..res.0 as i32).contains(&x) && (0..res.1 as i32).contains(&y);
+    if inside_screen && dx <= fx && fx <= w + dx && dy <= fy && fy <= h + dy {
+        if fx >= w * 0.5 + dx {
+            1
+        } else {
+            2
+        }
+    } else {
+        0
+    }
+}
+
+/// 曲バーのスロットの DST（タイマー 0 で引く。`on` なら BAR_BODY_ON）。マウスでバーを選ぶのに使う
+pub fn bar_slot_dst(skin: &Skin, st: &dyn SkinState, slot: i32, on: bool) -> Option<[f32; 4]> {
+    let name = if on { "BAR_BODY_ON" } else { "BAR_BODY_OFF" };
+    let e = skin.elements.iter().rev().find(|e| {
+        matches!(&e.kind, ElementKind::Other { command: c, index: i } if c == name && *i == slot)
+    })?;
+    Some(pose_at(e, st.timer(0))?.dst)
+}
+
+/// BUTTON のクリック（LR2 `ButtonByInput` が 2 を返すもの）: 動作と向き（+1 / −1）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonClick {
+    pub action: i32,
+    pub delta: i32,
+}
+
+/// DOM-SKD-18: 押した（LR2 のマウスの状態 1）位置の BUTTON。条件をすべて満たし、DST のタイマーが動いていて、
+/// SRC 引数 12（クリック）が 1、引数 13（パネル）が 0 か今のパネルのもの。引数 14 が 0 なら右半分で +1・左半分で −1、
+/// 1 ならどこでも +1、2 ならどこでも −1
+pub fn button_clicks(
+    skin: &Skin,
+    st: &dyn SkinState,
+    x: i32,
+    y: i32,
+    panel: i32,
+) -> Vec<ButtonClick> {
+    let mut out = vec![];
+    for e in &skin.elements {
+        let ElementKind::Button { action } = e.kind else {
+            continue;
+        };
+        let Some(s) = e.source.as_ref() else {
+            continue;
+        };
+        if !ops_true(st, e) {
+            continue;
+        }
+        let Some(t) = st.timer(e.timer.0) else {
+            continue;
+        };
+        let Some(pose) = pose_at(e, Some(t)) else {
+            continue;
+        };
+        let [_, click, p, side, _] = s.params;
+        let m = mouse_on(pose.dst, skin.resolution, x, y);
+        let delta = if (m == 1 && side == 0) || (m != 0 && side == 1) {
+            1
+        } else if (m == 2 && side == 0) || (m != 0 && side == 2) {
+            -1
+        } else {
+            continue;
+        };
+        if click == 1 && (p == panel || p == 0) {
+            out.push(ButtonClick { action, delta });
+        }
+    }
+    out
 }
