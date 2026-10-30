@@ -29,3 +29,27 @@ pub fn parse_option_strings(bytes: &[u8]) -> BTreeMap<String, Vec<String>> {
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rstest::rstest;
+
+    /// SKN-OST-01: オプションの名前の一覧
+    #[rstest]
+    #[case::mode(b"#MODE,ALL,SINGLE,7KEYS\r\n".to_vec(), "#MODE", vec!["ALL", "SINGLE", "7KEYS", "", "", "", "", "", "", ""])]
+    #[case::quoted(b"#SORT,\"DIRECTORY\",LEVEL\n".to_vec(), "#SORT", vec!["DIRECTORY", "LEVEL", "", "", "", "", "", "", "", ""])]
+    #[case::shift_jis(b"// x\n#DIFFICULTY,\x91\x53\x82\xC4\n".to_vec(), "#DIFFICULTY", vec!["全て", "", "", "", "", "", "", "", "", ""])]
+    #[case::later_wins(b"#MODE,A\n#MODE,B\n".to_vec(), "#MODE", vec!["B", "", "", "", "", "", "", "", "", ""])]
+    fn skn_ost_01_option_strings(
+        #[case] bytes: Vec<u8>,
+        #[case] item: &str,
+        #[case] want: Vec<&str>,
+    ) {
+        let got = parse_option_strings(&bytes);
+        assert_eq!(
+            got.get(item).cloned(),
+            Some(want.into_iter().map(String::from).collect())
+        );
+    }
+}
