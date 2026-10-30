@@ -18,7 +18,7 @@ mod skin_render;
 
 use application::play::{KeyId, KeyInput, PlaySession, VisibleNote};
 use application::play_options::{ControlInput, PlayOptions};
-use application::play_skin::PlaySkin;
+use application::play_skin::{PlaySkin, QuitInput};
 use application::ports::{AudioOutput, ChartLoader, FileSystem, SkinLoader};
 use application::result_skin::{after_play, AfterPlay};
 use application::settings::Settings;
@@ -659,6 +659,7 @@ fn prepare_play(boot: &Boot, req: &PlayRequest) -> Result<Prepared, String> {
         lead_in_ms,
         scratch: [false; 2],
         control: [false; 2],
+        mouse_right: 0,
         save_mode: options.save_mode(),
         saved: None,
         over: false,
@@ -692,6 +693,8 @@ struct Game {
     scratch: [bool; 2],
     /// START・SELECT を押しているか
     control: [bool; 2],
+    /// LR2 のマウスの右ボタンの状態（途中終了に使う）
+    mouse_right: u8,
     /// 何を保存するか（None は保存しない）
     save_mode: Option<SaveMode>,
     /// 保存の結果（保存したら Some。保存しなかったら Some(None)）
@@ -802,13 +805,19 @@ impl AudioOutput for BevyAudio<'_, '_, '_> {
     }
 }
 
-/// Esc で選曲に戻る（譜面を直接渡して起動したなら終了）
+/// Esc で選曲に戻る（譜面を直接渡して起動したなら終了）。プレイスキンとリザルトスキンで遊んでいるときは
+/// LR2 と同じ途中終了（`play_frame`。`#FADEOUT` の後に場面を閉じる）にする
 fn leave_play(
     keys: Res<ButtonInput<KeyCode>>,
     boot: Res<Boot>,
+    game: Res<Game>,
+    result: Option<Res<result_scene::ResultScreen>>,
     mut next: ResMut<NextState<Scene>>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    if result.is_some() && game.skin.is_some() {
+        return;
+    }
     if keys.just_pressed(KeyCode::Escape) {
         if boot.direct {
             exit.write(AppExit::Success);
@@ -819,9 +828,13 @@ fn leave_play(
 }
 
 /// 1 ループ = 1 フレーム。入力を読んで `PlaySession` を進める
+#[allow(clippy::too_many_arguments)]
 fn play_frame(
     mut commands: Commands,
     input: Res<input::SlotInput>,
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    result: Option<Res<result_scene::ResultScreen>>,
     mut wheel: MessageReader<MouseWheel>,
     mut game: ResMut<Game>,
     mut scores: ResMut<ScoreDb>,
@@ -859,17 +872,35 @@ fn play_frame(
     }
     let t = game.now_ms();
     let game = &mut *game;
-    let mut audio = BevyAudio {
-        commands: &mut commands,
-        sounds: &game.sounds,
+    game.mouse_right =
+        result_scene::right_state(game.mouse_right, buttons.pressed(MouseButton::Right));
+    // 途中終了した後は判定しない（APP-SKN-14）
+    let quitting = game.skin.as_ref().is_some_and(|sp| sp.play.quitting());
+    let out = if quitting {
+        vec![]
+    } else {
+        let mut audio = BevyAudio {
+            commands: &mut commands,
+            sounds: &game.sounds,
+        };
+        game.session.frame(t, &events, &mut audio)
     };
-    let out = game.session.frame(t, &events, &mut audio);
     if let Some(sp) = game.skin.as_mut() {
         // 皿の向き: 1 つ目のキーは上、2 つ目は下（両方なら止める）
         sp.play
             .set_scratch(game.scratch[1] as i32 - game.scratch[0] as i32);
         sp.play.update(t, &game.session, &out);
         sp.play.control(&ctrl);
+        // 途中終了（APP-SKN-14）はリザルトスキンがあるとき（無ければ Esc ですぐ選曲に戻る）
+        if result.is_some() {
+            let quit = QuitInput {
+                escape: keys.pressed(KeyCode::Escape),
+                mouse_right: game.mouse_right,
+                start_held: game.control[0],
+                select_held: game.control[1],
+            };
+            sp.play.quit(&quit, game.session.play().total_notes());
+        }
         if sp.play.scene_over() {
             game.over = true;
         }
