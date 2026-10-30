@@ -151,6 +151,11 @@ impl SelectState {
     pub fn current(&self) -> Option<&Bar> {
         self.bars.get(self.cursor)
     }
+    /// カーソルを置く（一覧の本数で回す。選曲スキンの一覧の動き [`BarScroll`] から決める）
+    pub fn set_cursor(&mut self, cursor: usize) {
+        let n = self.bars.len();
+        self.cursor = if n == 0 { 0 } else { cursor % n };
+    }
     /// 開いているフォルダの深さ（最初の一覧は 0）
     pub fn depth(&self) -> usize {
         self.stack.len()
@@ -236,6 +241,214 @@ impl ScrollRepeat {
         };
         self.end_ms = now_ms + wait;
         delta
+    }
+}
+
+/// LR2 の `ChangeValueByTime`（線形）: v1 = v2 なら v1、t1 ≤ now ≤ t2 かつ t1 < t2 なら直線、それ以外は now > t1 なら v2、でなければ v1
+pub fn change_value_by_time(v1: f64, v2: f64, t1: f64, t2: f64, now: f64) -> f64 {
+    if v1 == v2 {
+        return v1;
+    }
+    if now <= t2 && t1 <= now && t1 < t2 {
+        let r = (now - t1) / (t2 - t1);
+        return (1.0 - r) * v1 + r * v2;
+    }
+    if t1 < now {
+        v2
+    } else {
+        v1
+    }
+}
+
+/// ホイールで動かしたときの待ち（ms）
+pub const WHEEL_MS: i64 = 200;
+/// マウスで範囲の外のバーを押したときの待ち（ms）
+pub const MOUSE_MS: i64 = 200;
+
+/// 選曲スキンの一覧の動き（LR2 の `nowBar`・`oldBar`・`barMoveStartTime`・`barMoveEndTime`・`listTopbar`・
+/// `listCalculatedBar`・`listSelectedBarFromScreenTop`・`scrollDirection`。DOM-SEL-06..10）。位置は 1 本 = 1000。
+/// 動きの終わる時刻はキーのくり返しの待ち（[`ScrollRepeat`]）と同じもの
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BarScroll {
+    /// 動き始めの位置
+    old: i64,
+    /// 目標の位置
+    target: i64,
+    start_ms: i64,
+    /// 今の位置（回さない）
+    top: i64,
+    /// 今の位置を 0..本数 × 1000 に回したもの
+    position: i64,
+    /// 1 = 上へ、2 = 下へ（0 = まだ動かしていない）
+    direction: i32,
+    /// 選んでいるバーを置くスロット
+    slot: i32,
+    center: i32,
+    available: (i32, i32),
+    pub repeat: ScrollRepeat,
+}
+
+impl BarScroll {
+    /// 画面に入ったとき: 選ぶスロットは `center`（`#BAR_CENTER`）、カーソルは `cursor`
+    pub fn new(center: i32, available: (i32, i32), cursor: usize, n: usize, now_ms: i64) -> Self {
+        let mut s = Self {
+            old: 0,
+            target: 0,
+            start_ms: now_ms,
+            top: 0,
+            position: 0,
+            direction: 0,
+            slot: center,
+            center,
+            available,
+            repeat: ScrollRepeat::default(),
+        };
+        s.jump(cursor, n, now_ms);
+        s
+    }
+
+    /// DOM-SEL-09: カーソルを `cursor` に置いて止める（フォルダを開いた・戻った）
+    pub fn jump(&mut self, cursor: usize, n: usize, now_ms: i64) {
+        self.top = (self.center - self.slot) as i64 * 1000 + cursor as i64 * 1000;
+        self.old = self.top;
+        self.target = self.top;
+        self.start_ms = now_ms;
+        self.repeat.end_ms = now_ms;
+        self.position = wrap(self.top, n);
+    }
+
+    fn start(&mut self, now_ms: i64, end_ms: i64) {
+        self.old = self.top;
+        self.start_ms = now_ms;
+        self.repeat.end_ms = end_ms;
+    }
+
+    /// DOM-SEL-06: キー（DOM-SEL-05 の待ち）。動かした量（−1 / 0 / 1）を返す
+    pub fn keys(&mut self, now_ms: i64, up: KeyState, down: KeyState) -> i32 {
+        let d = self.repeat.update(now_ms, up, down);
+        if d != 0 {
+            let end = self.repeat.end_ms;
+            self.target += d as i64 * 1000;
+            self.start(now_ms, end);
+            self.direction = if d < 0 { 1 } else { 2 };
+        }
+        d
+    }
+
+    /// DOM-SEL-06: ホイール（正 = 上へ回した量）。待ちは 200ms。キーより先に呼ぶ（LR2 と同じ順）
+    pub fn wheel(&mut self, now_ms: i64, amount: i32) {
+        if amount == 0 {
+            return;
+        }
+        self.target -= amount as i64 * 1000;
+        self.start(now_ms, now_ms + WHEEL_MS);
+        self.direction = if amount > 0 { 1 } else { 2 };
+    }
+
+    /// DOM-SEL-10: マウスで押し続けているスロット `i`。`#BAR_AVAILABLE` の範囲なら選ぶスロットにし、
+    /// 範囲より前・後ろなら止まっているときだけ (i − 端) × 2000 動かす
+    pub fn mouse_hold(&mut self, now_ms: i64, i: i32) {
+        let (from, to) = self.available;
+        let edge = if i < from {
+            from
+        } else if i <= to {
+            self.slot = i;
+            return;
+        } else {
+            to
+        };
+        if self.target == self.top {
+            self.target += (i - edge) as i64 * 2000;
+            self.start(now_ms, now_ms + MOUSE_MS);
+        }
+    }
+
+    /// DOM-SEL-07: 時刻 `now_ms` の位置にする。位置（回したもの）が変わったら true
+    pub fn update(&mut self, now_ms: i64, n: usize) -> bool {
+        let p = change_value_by_time(
+            self.old as f64,
+            self.target as f64,
+            self.start_ms as f64,
+            self.repeat.end_ms as f64,
+            now_ms as f64,
+        ) as i64;
+        let before = self.position;
+        self.top = p;
+        self.position = wrap(p, n);
+        before != self.position
+    }
+
+    /// DOM-SEL-08: カーソル（LR2 `GetSongCursor`）
+    pub fn cursor(&self, n: usize) -> usize {
+        if n == 0 {
+            return 0;
+        }
+        let n = n as i64;
+        let step = (self.position % 1000 != 0 && self.direction == 2) as i64;
+        ((self.slot - self.center) as i64 + (self.position / 1000 + step) + n * 30) as usize
+            % n as usize
+    }
+
+    /// 一覧の位置（0..本数 × 1000）
+    pub fn position(&self) -> i64 {
+        self.position
+    }
+    /// 選んでいるバーを置いたスロット
+    pub fn slot(&self) -> i32 {
+        self.slot
+    }
+    /// 止まっているか（目標 = 今の位置）
+    pub fn still(&self) -> bool {
+        self.target == self.top
+    }
+}
+
+/// 位置を 0..本数 × 1000 に回す（LR2 は足し引きをくり返す）
+fn wrap(p: i64, n: usize) -> i64 {
+    let m = n as i64 * 1000;
+    if m == 0 {
+        return 0;
+    }
+    p.rem_euclid(m)
+}
+
+/// LR2 のマウスの左ボタンの状態（`mouse_buttonL`。DOM-SEL-11）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MouseButton {
+    /// 0 = 押していない、1 = 押した、2 = 押し続け、3 = 離した
+    pub state: u8,
+    press_ms: i64,
+}
+
+impl Default for MouseButton {
+    fn default() -> Self {
+        Self {
+            state: 0,
+            press_ms: i64::MIN / 2,
+        }
+    }
+}
+
+impl MouseButton {
+    /// このフレームの状態にする（`down` は押しているか）
+    pub fn update(&mut self, now_ms: i64, down: bool) -> u8 {
+        self.state = if !down {
+            if self.state == 0 || self.state == 3 {
+                0
+            } else if now_ms - self.press_ms > 32 {
+                3
+            } else {
+                2
+            }
+        } else if self.state != 1 && self.state != 2 {
+            if now_ms - self.press_ms >= 300 {
+                self.press_ms = now_ms;
+            }
+            1
+        } else {
+            2
+        };
+        self.state
     }
 }
 

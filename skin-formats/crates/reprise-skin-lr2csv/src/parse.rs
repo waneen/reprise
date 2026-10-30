@@ -161,6 +161,8 @@ struct Ctx<'a> {
     diags: Vec<Diagnostic>,
     /// 処理した命令行の数（描画順）
     lines: u32,
+    /// `#SRC_` で作った要素の名前（SKN-DST-04 の複製と区別する）
+    src_names: BTreeSet<String>,
 }
 
 pub fn decode(
@@ -187,6 +189,7 @@ pub fn decode(
         directives: vec![],
         diags: vec![],
         lines: 0,
+        src_names: BTreeSet::new(),
     };
     cx.process(path, &text, 0);
     Ok(SkinDocument {
@@ -448,8 +451,10 @@ impl Ctx<'_> {
 
     /// SKN-SRC-01..03
     fn src(&mut self, name: &str, row: &Row) {
+        self.src_names.insert(name.to_string());
         let v = |i| row.v(i);
-        let (kind, source) = if name == "TEXT" {
+        // BAR_TITLE は TEXT と同じ並び（OpenLR2 `ReadSRC_BAR_TITLE`）
+        let (kind, source) = if name == "TEXT" || name == "BAR_TITLE" {
             (
                 ElementKind::Text {
                     font: FontRef(v(2).max(0) as u32),
@@ -513,11 +518,19 @@ impl Ctx<'_> {
     fn dst(&mut self, file: &Path, no: usize, name: &str, row: &Row) {
         let index = row.v(1);
         let same = |e: &Element| e.command == name;
+        // SKN-DST-04 で複製した要素は添字ごとに別なので、同じ添字のものにだけ足す
+        let from_src = self.src_names.contains(name);
         let target = self
             .elements
             .iter()
             .rposition(|e| same(e) && e.index == index)
-            .or_else(|| self.elements.iter().rposition(same));
+            .or_else(|| {
+                if from_src {
+                    self.elements.iter().rposition(same)
+                } else {
+                    None
+                }
+            });
         let target = match target {
             Some(t) => t,
             None => {
