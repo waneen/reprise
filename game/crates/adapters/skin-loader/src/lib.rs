@@ -12,6 +12,7 @@
 //! | ADP-SK-07 | `FsResolver`: 一致するファイルが無ければ None |
 //! | ADP-SK-08 | 読み込み終了時点で真の条件を昇順で写す |
 //! | ADP-SK-09 | 抜き色: 最後の `#TRANSCOLOR,r,g,b`（LR2 が受け付ける綴り違い `TRANSCLOLR`/`TRANSCLOLOR` も）、無ければローダの既定 |
+//! | ADP-SK-10 | 場面の時間: `STARTINPUT`（beatoraja は `INPUT`）・`LOADSTART`・`LOADEND`・`PLAYSTART`・`FADEOUT`・`CLOSE`（`SKIP` も）の第 1 引数。後の行が勝ち、無ければ 0 |
 use application::ports::{PortError, SkinLoader};
 use domain::{random::LegacyMt, skin as d};
 use reprise_skin_core as sc;
@@ -105,7 +106,7 @@ impl FileResolver for FsResolver<'_> {
 }
 
 // ---------------------------------------------------------------------------
-// 写像（ADP-SK-01..04, 08, 09）
+// 写像（ADP-SK-01..04, 08..10）
 // ---------------------------------------------------------------------------
 
 pub fn scene_kind(kind: i32) -> d::SceneKind {
@@ -209,7 +210,26 @@ pub fn map_skin(doc: sc::SkinDocument, default_color_key: Option<[u8; 3]>) -> d:
             [v(0), v(1), v(2)]
         })
         .or(default_color_key);
+    // ADP-SK-10: 場面の時間（後の行が勝つ）
+    let mut timing = d::SceneTiming::default();
+    for dir in &doc.directives {
+        let v = dir
+            .args
+            .first()
+            .and_then(|s| s.trim().parse::<i32>().ok())
+            .unwrap_or(0);
+        match dir.command.as_str() {
+            "STARTINPUT" | "INPUT" => timing.start_input = v,
+            "LOADSTART" => timing.load_start = v,
+            "LOADEND" => timing.load_end = v,
+            "PLAYSTART" => timing.play_start = v,
+            "FADEOUT" => timing.fade_out = v,
+            "CLOSE" | "SKIP" => timing.close = v,
+            _ => {}
+        }
+    }
     d::Skin {
+        timing,
         color_key,
         options: doc.options.into_iter().collect(),
         scene: scene_kind(doc.header.kind),
