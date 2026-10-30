@@ -1,5 +1,5 @@
 //! リザルト画面。LR2 と同じく、プレイの場面を閉じたあと（オートプレイ・PG/GR/GD の無いプレイは除く）にリザルトスキン
-//! （`#INFORMATION` 種別 7）で描く。鍵盤 1〜7・Esc・Enter・マウスの左右の押し続けで、ランクの表示 → 記録更新の表示 →
+//! （`#INFORMATION` 種別 7）で描く。1P・2P の鍵盤 1〜7・Esc・Enter・マウスの左右の押し続けで、ランクの表示 → 記録更新の表示 →
 //! 閉じ始め（`#FADEOUT`）と進み、閉じるときに白鍵と黒鍵を押し続けていれば同じ譜面をもう一度、それ以外は選曲に戻る。
 //! 規則は `application::result_skin`・`domain::skin::lr2::draw_result`。リザルトスキンが無ければこの画面は使わず、結果を文字で出す
 use crate::input::SlotInput;
@@ -129,8 +129,10 @@ pub fn input(
     let out = sc.state.frame(
         now,
         ResultInput {
-            slots: &slots.events,
-            held: slots.held,
+            slots: &slots.p1.events,
+            held: slots.p1.held,
+            slots_p2: &slots.p2.events,
+            held_p2: slots.p2.held,
             escape: keys.just_pressed(KeyCode::Escape),
             enter: keys.just_pressed(KeyCode::Enter),
             mouse_left,

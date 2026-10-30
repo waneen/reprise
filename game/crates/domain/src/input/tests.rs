@@ -37,7 +37,7 @@ fn axis() -> Source {
 #[case::same_source_twice(Side::P1, key_slot(1), 1, Some(k("KeyS")), vec![Some(k("KeyZ")), Some(k("KeyS"))], vec![key_slot(1), key_slot(2)])]
 #[case::remove_trims(Side::P1, key_slot(1), 0, None, vec![], vec![])]
 #[case::beyond_places(Side::P1, key_slot(1), 16, Some(k("KeyA")), vec![Some(k("KeyZ"))], vec![])]
-#[case::p2_not_read(Side::P2, key_slot(1), 0, Some(k("KeyA")), vec![Some(k("KeyZ"))], vec![])]
+#[case::p2_not_in_p1(Side::P2, key_slot(1), 0, Some(k("KeyA")), vec![Some(k("KeyZ"))], vec![])]
 fn dom_inp_02_set(
     #[case] side: Side,
     #[case] slot: usize,
@@ -87,4 +87,24 @@ fn dom_inp_04_analog_scratch(#[case] frames: Vec<(i64, f32)>, #[case] want: Vec<
         .map(|(t, v)| a.update(t, v, 100))
         .collect();
     assert_eq!(got, want);
+}
+
+/// DOM-INP-05: 読み方ごとの操作（1P・2P・SP は 1P と 2P をまとめて 1P の操作に）
+#[rstest]
+#[case::p1_reads_p1(Reading::P1, "KeyZ", vec![key_slot(1)])]
+#[case::p1_ignores_p2(Reading::P1, "KeyM", vec![])]
+#[case::p2_reads_p2(Reading::P2, "KeyM", vec![key_slot(1)])]
+#[case::p2_ignores_p1(Reading::P2, "KeyZ", vec![])]
+#[case::single_reads_p1(Reading::Single, "KeyZ", vec![key_slot(1)])]
+#[case::single_reads_p2_as_p1(Reading::Single, "KeyM", vec![key_slot(1)])]
+#[case::single_p2_start(Reading::Single, "KeyP", vec![START])]
+fn dom_inp_05_reading(#[case] reading: Reading, #[case] key: &str, #[case] want: Vec<usize>) {
+    let mut b = Bindings::default();
+    b.set(Side::P2, key_slot(1), 0, Some(k("KeyM")));
+    b.set(Side::P2, START, 0, Some(k("KeyP")));
+    let src = k(key);
+    assert_eq!(b.slots_in(reading, &src).collect::<Vec<_>>(), want);
+    for &slot in &want {
+        assert!(b.sources_in(reading, slot).any(|s| s == &src));
+    }
 }
