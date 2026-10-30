@@ -31,7 +31,10 @@ pub struct Library {
 /// 一覧の 1 行
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Bar {
-    Folder { path: PathBuf, title: String },
+    Folder {
+        path: PathBuf,
+        title: String,
+    },
     /// `Library::songs` の添字
     Song(usize),
 }
