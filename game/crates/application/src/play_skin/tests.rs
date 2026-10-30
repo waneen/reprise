@@ -2,7 +2,7 @@
 use super::*;
 use crate::play::{KeyId, KeyInput};
 use crate::ports::AudioOutput;
-use domain::chart::{Beat, ChartHash, ChartMeta, Note, SoundId};
+use domain::chart::{Beat, ChartHash, ChartMeta, Lane, Note, SoundId};
 use rstest::rstest;
 
 struct Mute;
@@ -10,7 +10,7 @@ impl AudioOutput for Mute {
     fn play(&mut self, _: SoundId, _: i64) {}
 }
 
-/// BPM 60（1 拍 = 1000ms）。レーン 1 に 1, 2 拍、レーン 2 に 3〜5 拍の LN
+/// BPM 60（1 拍 = 1000ms）。レーン 1 に 1, 2 拍、レーン 2 に 3〜5 拍の LN（終端の音 1）
 fn chart(measure0: Option<f64>) -> Chart {
     let note = |b: f64, lane: u8, kind: NoteKind| Note {
         beat: Beat(b),
@@ -36,7 +36,7 @@ fn chart(measure0: Option<f64>) -> Chart {
                 2,
                 NoteKind::Long {
                     end: Beat(5.0),
-                    end_sound: None,
+                    end_sound: Some(SoundId(1)),
                 },
             ),
         ],
@@ -51,16 +51,35 @@ fn chart(measure0: Option<f64>) -> Chart {
     }
 }
 
+/// 入力開始 300、準備 500 + 500、プレイ開始 1000（譜面の先頭は画面の開始から 2000ms）、FADEOUT 500、CLOSE 300
+const TIMING: SceneTiming = SceneTiming {
+    start_input: 300,
+    load_start: 500,
+    load_end: 500,
+    play_start: 1000,
+    fade_out: 500,
+    close: 300,
+};
+
 /// フレーム（時刻, 物理キーの変化）を順に進める。キー 0 → 皿、1 → レーン 1、2 → レーン 2
 fn run(
     gauge: GaugeType,
     measure0: Option<f64>,
     frames: &[(i64, &[(KeyId, bool)])],
 ) -> (PlaySession, PlaySkin) {
+    run_with(gauge, measure0, &BTreeMap::new(), frames)
+}
+
+fn run_with(
+    gauge: GaugeType,
+    measure0: Option<f64>,
+    sound_ms: &BTreeMap<SoundId, i64>,
+    frames: &[(i64, &[(KeyId, bool)])],
+) -> (PlaySession, PlaySkin) {
     let c = chart(measure0);
     let input = KeyInput::new([(0, Lane(0)), (1, Lane(1)), (2, Lane(2))]);
     let mut s = PlaySession::new(&c, gauge, input).unwrap();
-    let mut k = PlaySkin::new(&c, &s, gauge, 2000, &[901]);
+    let mut k = PlaySkin::new(&c, &s, gauge, TIMING, &[901], sound_ms);
     for (t, ev) in frames {
         let out = s.frame(*t, ev, &mut Mute);
         k.update(*t, &s, &out);
@@ -91,11 +110,14 @@ const UP1: &[(KeyId, bool)] = &[(1, false)];
 const PRESS2: &[(KeyId, bool)] = &[(2, true)];
 const NONE: &[(KeyId, bool)] = &[];
 
-/// APP-SKN-01: 画面の開始でタイマー 0・1・40 が動き、41 は譜面の先頭から。変わらない条件:
+/// APP-SKN-01: タイマー 0 は画面の開始、1 は `#STARTINPUT` を過ぎてから、40 は `#LOADSTART`+`#LOADEND`、
+/// 41 は譜面の先頭（さらに `#PLAYSTART` 後）から。変わらない条件:
 /// 32（オートでない）・40（BGA なし）・42/43（GROOVE 系/HARD 系）・81（読み込み済み）・160..164（鍵盤数）・170/171・172/173（LN）・スキン設定
 #[rstest]
-#[case::before_play(GaugeType::Groove, &[(-1500, NONE)], vec![Timer(0, Some(500)), Timer(1, Some(500)), Timer(40, Some(500)), Timer(41, None), Op(32, true), Op(33, false), Op(40, true), Op(42, true), Op(43, false), Op(81, true), Op(160, true), Op(161, false), Op(170, true), Op(173, true), Op(172, false), Op(901, true), Op(900, false)])]
-#[case::playing(GaugeType::Groove, &[(-1500, NONE), (100, NONE)], vec![Timer(0, Some(2100)), Timer(41, Some(100))])]
+#[case::before_play(GaugeType::Groove, &[(-1500, NONE)], vec![Timer(0, Some(500)), Timer(1, Some(0)), Timer(40, None), Timer(41, None), Op(32, true), Op(33, false), Op(40, true), Op(42, true), Op(43, false), Op(81, true), Op(160, true), Op(161, false), Op(170, true), Op(173, true), Op(172, false), Op(901, true), Op(900, false)])]
+#[case::before_input(GaugeType::Groove, &[(-1800, NONE)], vec![Timer(0, Some(200)), Timer(1, None)])]
+#[case::ready(GaugeType::Groove, &[(-1500, NONE), (-500, NONE)], vec![Timer(1, Some(1000)), Timer(40, Some(500)), Timer(41, None)])]
+#[case::playing(GaugeType::Groove, &[(-1500, NONE), (100, NONE)], vec![Timer(0, Some(2100)), Timer(40, Some(1100)), Timer(41, Some(100))])]
 #[case::survival(GaugeType::Hard, &[], vec![Op(42, false), Op(43, true)])]
 fn app_skn_01_start(
     #[case] gauge: GaugeType,
@@ -152,7 +174,7 @@ fn app_skn_04_gauge_and_progress(
 /// 104/105/106 = コンボ・最大コンボ・総ノーツ、107 = 表示 HP、110..114 = 判定数、115 = 総ノーツに対する率、160 = BPM、
 /// 161/162 = 経過の分・秒、163/164 = 残りの分・秒（1 秒未満は無し）
 #[rstest]
-#[case::two_pgreats(&[(1000, PRESS1), (1100, UP1), (2000, PRESS1), (2100, UP1)], vec![
+#[case::two_pgreats(&[(1000, PRESS1), (1100, UP1), (2000, PRESS1), (2100, UP1), (2600, NONE)], vec![
     Num(100, Some(133333)), Num(101, Some(4)), Num(102, Some(100)), Num(103, Some(0)), Num(104, Some(2)), Num(105, Some(2)),
     Num(106, Some(3)), Num(107, Some(100)), Num(110, Some(2)), Num(111, Some(0)), Num(114, Some(0)), Num(115, Some(66)),
     Num(160, Some(60)), Num(161, Some(0)), Num(162, Some(2)), Num(163, Some(0)), Num(164, Some(2)),
@@ -165,7 +187,7 @@ fn app_skn_05_numbers(#[case] frames: &[(i64, &[(KeyId, bool)])], #[case] probes
 }
 
 /// APP-SKN-06: 描画材料。ノーツは判定までの拍数、ゲージは HP/2。タイマー 140 は 1 拍 = 1000 で小節線ごとに 0 から。
-/// BARGRAPH 1・SLIDER 6 は曲の進み具合（最後のオブジェクトまで）
+/// BARGRAPH 1・SLIDER 6 は曲の進み具合（曲の長さまで）。小節線は判定までの拍数
 #[rstest]
 #[case::rhythm(None, 1500, 1500, 0.3)]
 #[case::rhythm_next_measure(None, 4500, 500, 0.9)]
@@ -189,9 +211,68 @@ fn app_skn_06_view(
         notes,
         vec![(1, 1.0, None), (1, 2.0, None), (2, 3.0, Some(5.0))]
     );
+    assert_eq!(v.lines, vec![0.0, 4.0]);
     assert_eq!(
         (v.gauge, v.survival, v.tremble, v.hi_speed),
         (10, false, 1, 200.0)
     );
     let _ = s;
+}
+
+/// APP-SKN-07: 表示の追従。スコア（数値 100）は 500ms で、HP（数値 107・ゲージ）は差 × 10ms で直線的に新しい値へ。
+/// 追いかけている途中で値が変わったら、その時点の表示から追いかけ直す
+#[rstest]
+#[case::score_at_judge(&[(1000, PRESS1)], 100, Some(0))]
+#[case::score_halfway(&[(1000, PRESS1), (1250, NONE)], 100, Some(33333))]
+#[case::score_done(&[(1000, PRESS1), (1500, NONE)], 100, Some(66666))]
+#[case::score_retarget(&[(1000, PRESS1), (1250, UP1), (2000, PRESS1), (2250, NONE)], 100, Some(99999))]
+#[case::hp_at_judge(&[(0, NONE), (1000, PRESS1)], 107, Some(20))]
+#[case::hp_halfway(&[(0, NONE), (1000, PRESS1), (1260, NONE)], 107, Some(46))]
+#[case::hp_done(&[(0, NONE), (1000, PRESS1), (1520, NONE)], 107, Some(72))]
+fn app_skn_07_follow(
+    #[case] frames: &[(i64, &[(KeyId, bool)])],
+    #[case] id: i32,
+    #[case] want: Option<i64>,
+) {
+    let (_, k) = run(GaugeType::Groove, None, frames);
+    assert_eq!(k.number(id), want);
+}
+
+/// APP-SKN-08: 曲の長さ = 各オブジェクトの時刻 + その音の長さ の最大。それを過ぎるとタイマー 2、
+/// そこから `#FADEOUT` を過ぎたら場面を閉じる。途中終了はタイマー 3 から `#CLOSE`
+#[rstest]
+#[case::playing(&[], GaugeType::Groove, &[(5000, NONE)], None, None, false)]
+#[case::song_end(&[], GaugeType::Groove, &[(5001, NONE)], Some(0), None, false)]
+#[case::faded(&[], GaugeType::Groove, &[(5001, NONE), (5502, NONE)], Some(501), None, true)]
+#[case::sound_tail(&[(1, 800)], GaugeType::Groove, &[(5500, NONE)], None, None, false)]
+#[case::dead(&[], GaugeType::Hazard, &[(1300, NONE)], None, Some(0), false)]
+#[case::closed(&[], GaugeType::Hazard, &[(1300, NONE), (1601, NONE)], None, Some(301), true)]
+fn app_skn_08_scene_end(
+    #[case] sounds: &[(u32, i64)],
+    #[case] gauge: GaugeType,
+    #[case] frames: &[(i64, &[(KeyId, bool)])],
+    #[case] t2: Option<i64>,
+    #[case] t3: Option<i64>,
+    #[case] over: bool,
+) {
+    let sound_ms = sounds.iter().map(|&(s, l)| (SoundId(s), l)).collect();
+    let (_, k) = run_with(gauge, None, &sound_ms, frames);
+    assert_eq!((k.timer(2), k.timer(3), k.scene_over()), (t2, t3, over));
+}
+
+/// APP-SKN-09: 皿の角度。回している間はその向きに 720°/s、それ以外はプレイ開始後 360°/s、開始前は止まる
+#[rstest]
+#[case::idle_before(0, -1000, 0.0)]
+#[case::idle_playing(0, 250, 90.0)]
+#[case::up(-1, 250, 180.0)]
+#[case::down(1, 125, 90.0)]
+fn app_skn_09_turntable(#[case] dir: i32, #[case] t: i64, #[case] angle: f32) {
+    let c = chart(None);
+    let input = KeyInput::new([(0, Lane(0))]);
+    let s = PlaySession::new(&c, GaugeType::Groove, input).unwrap();
+    let mut k = PlaySkin::new(&c, &s, GaugeType::Groove, TIMING, &[], &BTreeMap::new());
+    k.update(t.min(0), &s, &[]);
+    k.set_scratch(dir);
+    k.update(t.max(0), &s, &[]);
+    assert_eq!(k.turntable(1), angle);
 }
