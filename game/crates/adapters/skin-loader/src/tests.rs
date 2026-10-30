@@ -26,6 +26,7 @@ fn doc(kind: i32, images: Vec<sc::ImageEntry>, elements: Vec<sc::Element>) -> sc
         },
         images,
         fonts: vec![],
+        image_fonts: vec![],
         elements,
         directives: vec![],
         diagnostics: vec![],
@@ -191,6 +192,46 @@ fn adp_sk_10_scene_timing(#[case] directives: Vec<(&str, &str)>, #[case] expecte
         })
         .collect();
     assert_eq!(map_skin(dc, None).timing, expected);
+}
+
+/// ADP-SK-11: フォント
+#[rstest]
+#[case::loaded(sc::ImageFontEntry::Loaded(sc::ImageFont {
+    size: 20,
+    margin: 1,
+    textures: vec![(5, sc::ImageEntry::File("f.png".into())), (6, sc::ImageEntry::Missing("g.png".into()))],
+    glyphs: vec![sc::Glyph { ch: 'A', texture: 5, rect: [1, 2, 3, 4] }, sc::Glyph { ch: 'B', texture: 6, rect: [0; 4] }, sc::Glyph { ch: 'C', texture: 9, rect: [0; 4] }],
+}), Some(d::ImageFont { size: 20, margin: 1, glyphs: [('A', d::FontGlyph { image: 1, rect: [1, 2, 3, 4] })].into_iter().collect() }), 2)]
+#[case::missing(sc::ImageFontEntry::Missing("x.lr2font".into()), None, 1)]
+fn adp_sk_11_fonts(
+    #[case] image_font: sc::ImageFontEntry,
+    #[case] expected: Option<d::ImageFont>,
+    #[case] images: usize,
+) {
+    let mut dc = doc(0, vec![sc::ImageEntry::File("a.png".into())], vec![]);
+    dc.fonts = vec![
+        sc::FontEntry::System {
+            size: 24,
+            thickness: 3,
+            kind: 1,
+        },
+        sc::FontEntry::File("f.ttf".into()),
+    ];
+    dc.image_fonts = vec![image_font];
+    let s = map_skin(dc, None);
+    assert_eq!(
+        s.fonts,
+        vec![
+            Some(d::SystemFont {
+                size: 24,
+                thickness: 3,
+                kind: 1
+            }),
+            None
+        ]
+    );
+    assert_eq!(s.image_fonts, vec![expected]);
+    assert_eq!(s.images.len(), images);
 }
 
 // ---- FsResolver ----
