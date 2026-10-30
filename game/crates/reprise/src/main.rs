@@ -4,12 +4,14 @@
 //! 使い方: `reprise <譜面ファイル> [オプション]`（オプションは [`USAGE`]）
 //! 1P の 7 鍵（5 鍵）のプレイ画面。`--skin` で LR2 のプレイスキンで描き、無ければ四角形だけで描く。
 //! `--skin-root` はスキン中のパスの基準（LR2 なら LR2 本体のフォルダ。既定は今のフォルダ）。
+//! 記録は `--data` のフォルダ（既定は今のフォルダの `reprise-data`）の `score.db` に保存する。
 mod skin_render;
 
 use application::play::{KeyId, KeyInput, PlaySession, VisibleNote};
 use application::play_options::{ControlInput, PlayOptions};
 use application::play_skin::PlaySkin;
 use application::ports::{AudioOutput, ChartLoader, ScoreImporter, SkinLoader};
+use application::usecase::SavedScore;
 use bevy::asset::RenderAssetUsages;
 use bevy::audio::AudioSource;
 use bevy::camera::visibility::NoFrustumCulling;
@@ -28,14 +30,16 @@ use chart_loader::DecoderLoader;
 use domain::chart::{Chart, ImageId, Lane, SoundId};
 use domain::play::{GaugeType, HsFix, Judge, PlayEvent};
 use domain::random::LegacyMt;
+use domain::score::{SaveMode, ScoreRecord};
 use domain::skin::lr2::{draw_play, Draw, Quad, TextRun};
 use domain::skin::{SceneKind, Skin};
+use score_db::SqliteScoreDb;
 use skin_loader::DecoderSkinLoader;
 use skin_render::{SkinMaterial, SkinRenderPlugin};
 use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 /// 再生開始から 0ms（譜面の先頭）までの待ち時間（スキン無しのとき。スキンがあればスキンの場面の時間）
@@ -44,7 +48,10 @@ const LEAD_IN_MS: i64 = 2000;
 const VISIBLE_BEATS: f64 = 4.0;
 
 const USAGE: &str = "使い方: reprise <譜面ファイル> [--gauge groove|easy|hard|death|pattack|gattack] [--skin <スキン> [--skin-root <フォルダ>]] \
-[--hs <ハイスピード×100>] [--hsfix off|max|min|avg|const|main] [--cover <0..100>] [--offset <ms>] [--auto]";
+[--hs <ハイスピード×100>] [--hsfix off|max|min|avg|const|main] [--cover <0..100>] [--offset <ms>] [--auto] [--data <フォルダ>]";
+
+/// 記録などを置くフォルダの既定（今のフォルダから）
+const DATA_DIR: &str = "reprise-data";
 
 /// 既定のキー配置（1P）。皿は 2 つのキーで左右回転を表す
 const KEYMAP: [(KeyCode, u8); 9] = [
@@ -271,6 +278,7 @@ fn main() {
     let mut skin_path = None;
     let mut skin_root = std::env::current_dir().unwrap_or_default();
     let mut options = PlayOptions::default();
+    let mut data_dir = PathBuf::from(DATA_DIR);
     let usage = || -> ! {
         eprintln!("{USAGE}");
         std::process::exit(2);
@@ -291,6 +299,7 @@ fn main() {
             }
             "--offset" => options.judge_offset = number(),
             "--auto" => options.auto = true,
+            "--data" => data_dir = PathBuf::from(value()),
             _ if a.starts_with("--") => usage(),
             _ => chart_path = Some(PathBuf::from(a)),
         }
@@ -300,6 +309,13 @@ fn main() {
         usage();
     };
     let _ = score_importers();
+    let scores = match SqliteScoreDb::open(&data_dir.join("score.db")) {
+        Ok(db) => Some(Mutex::new(db)),
+        Err(e) => {
+            eprintln!("記録を保存できない: {e:?}");
+            None
+        }
+    };
     let skin = match skin_path.map(|p| load_skin(&p, skin_root)).transpose() {
         Ok(v) => v,
         Err(e) => {
@@ -391,6 +407,9 @@ fn main() {
             lead_in_ms,
             scratch: [false; 2],
             control: [false; 2],
+            scores,
+            save_mode: options.save_mode(),
+            saved: None,
             over: false,
             start: None,
             last_judge: None,
@@ -445,6 +464,12 @@ struct Game {
     scratch: [bool; 2],
     /// START・SELECT を押しているか
     control: [bool; 2],
+    /// 記録の保存先（開けなければ None。sqlite の接続は Sync でないので Mutex に入れる）
+    scores: Option<Mutex<SqliteScoreDb>>,
+    /// 何を保存するか（None は保存しない）
+    save_mode: Option<SaveMode>,
+    /// 保存の結果（保存したら Some。保存しなかったら Some(None)）
+    saved: Option<Option<SavedScore>>,
     /// 場面が終わった（結果を出す）
     over: bool,
     /// 最初のフレームで決める（起動にかかった時間で先頭を取りこぼさないように）
@@ -645,6 +670,18 @@ fn play_frame(
         if sp.play.scene_over() {
             game.over = true;
         }
+    }
+    // 終わったら 1 回だけ記録を保存する
+    if game.saved.is_none() && game.session.play().is_finished() {
+        let record = game.session.record();
+        let saved = match game.scores.as_mut().and_then(|m| m.get_mut().ok()) {
+            Some(db) => application::usecase::save_play(db, &record, game.save_mode)
+                .map_err(|e| eprintln!("記録を保存できない: {e:?}"))
+                .ok()
+                .flatten(),
+            None => None,
+        };
+        game.saved = Some(saved);
     }
     for e in out {
         if let PlayEvent::Judge { judge, .. } = e {
@@ -853,7 +890,7 @@ fn show_result(
     let c = play.counts();
     commands.spawn((
         Text::new(format!(
-            "RESULT: {:?}\nEX SCORE {}\nPG {}  GR {}  GD {}  BD {}  PR {}\nMAX COMBO {} / {}\n\nPress Esc to quit",
+            "RESULT: {:?}\nEX SCORE {}\nPG {}  GR {}  GD {}  BD {}  PR {}\nMAX COMBO {} / {}\n{}\n\nPress Esc to quit",
             game.session.record().lamp,
             c.ex_score(),
             c.pgreat,
@@ -863,6 +900,7 @@ fn show_result(
             c.poor,
             play.max_combo(),
             play.total_notes(),
+            best_text(game.saved.as_ref()),
         )),
         TextFont::from_font_size(28.0),
         Node {
@@ -873,6 +911,24 @@ fn show_result(
         },
         ResultText,
     ));
+}
+
+/// 保存した記録の前後
+fn best_text(saved: Option<&Option<SavedScore>>) -> String {
+    let Some(Some(s)) = saved else {
+        return "（記録は保存していません）".into();
+    };
+    let line = |r: &ScoreRecord| {
+        format!(
+            "{:?}  EX {}  MISS {}  PLAY {}",
+            r.lamp,
+            r.ex_score,
+            r.min_bp.map_or("-".into(), |b| b.to_string()),
+            r.play_count
+        )
+    };
+    let before = s.before.as_ref().map_or("-".into(), line);
+    format!("\nBEST {before}\n  -> {}", line(&s.after))
 }
 
 fn draw_notes(mut commands: Commands, game: Res<Game>, old: Query<Entity, With<NoteSprite>>) {
@@ -957,8 +1013,9 @@ fn draw_hud(game: Res<Game>, mut hud: Query<&mut Text, With<Hud>>) {
     );
     if play.is_finished() {
         s += &format!(
-            "\n\nRESULT: {:?}\nPress Esc to quit",
-            game.session.record().lamp
+            "\n\nRESULT: {:?}\n{}\nPress Esc to quit",
+            game.session.record().lamp,
+            best_text(game.saved.as_ref())
         );
     }
     text.0 = s;

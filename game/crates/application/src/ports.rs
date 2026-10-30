@@ -32,9 +32,11 @@ pub trait ScoreImporter {
     fn import(&self, source: &Path) -> Result<Vec<ScoreRecord>, PortError>;
 }
 
+/// 記録の保存先（同じ譜面・同じルールにつき 1 件）
 pub trait ScoreRepository {
-    fn find(&self, chart: &ChartHash, ruleset: RulesetId) -> Option<ScoreRecord>;
-    fn save(&mut self, record: ScoreRecord);
+    fn find(&self, chart: &ChartHash, ruleset: RulesetId)
+        -> Result<Option<ScoreRecord>, PortError>;
+    fn save(&mut self, record: ScoreRecord) -> Result<(), PortError>;
 }
 
 pub trait Clock {

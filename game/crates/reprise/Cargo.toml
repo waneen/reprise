@@ -11,6 +11,7 @@ chart-loader = { path = "../adapters/chart-loader" }
 skin-loader = { path = "../adapters/skin-loader" }
 score-import-lr2 = { path = "../adapters/score-import-lr2" }
 score-import-beatoraja = { path = "../adapters/score-import-beatoraja" }
+score-db = { path = "../adapters/score-db" }
 reprise-chart-bms.workspace = true
 reprise-chart-bmson.workspace = true
 reprise-skin-lr2csv.workspace = true
