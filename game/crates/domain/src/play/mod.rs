@@ -4,6 +4,7 @@ use crate::chart::ChartMeta;
 
 pub mod beatoraja;
 mod gauge;
+mod graph;
 mod judge;
 pub mod lr2;
 mod lr2_play;
@@ -11,6 +12,7 @@ pub mod scroll;
 mod timing;
 pub use beatoraja::BeatorajaRuleset;
 pub use gauge::{Gauge, GaugeType};
+pub use graph::{GaugeGraph, GRAPH_POINTS};
 pub use judge::{JudgeLane, JudgeWindows, Window};
 pub use lr2::Lr2Ruleset;
 pub use lr2_play::{JudgeCounts, KeyState, Lr2Play, PendingNote, PlayEvent};
