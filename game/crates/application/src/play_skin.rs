@@ -418,7 +418,7 @@ impl PlaySkin {
         if !self.graph_done {
             self.graph.log(t_ms, self.runtime_ms, hp);
             if play.is_dead() || t_ms > self.runtime_ms {
-                let unfinished = play.processed() < play.total_notes();
+                let unfinished = self.processed < play.total_notes() as i64;
                 self.graph.finish(if unfinished { 0.0 } else { hp });
                 self.graph_done = true;
             }
@@ -516,7 +516,7 @@ impl PlaySkin {
             options: self.opts.options,
             counts: play.counts(),
             total: play.total_notes(),
-            processed: play.processed(),
+            processed: self.processed as u32,
             combo: play.combo(),
             max_combo: play.max_combo(),
             hp: play.gauge(),
