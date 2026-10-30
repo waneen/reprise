@@ -7,7 +7,6 @@
 //! 記録は `--data` のフォルダ（既定は今のフォルダの `reprise-data`）の `score.db` に、設定は `config.json` に保存する
 //! （起動引数で渡した設定も保存するので、次からは引数無しで選曲から始められる）。
 mod input;
-mod keyconfig_scene;
 mod platform;
 mod select_scene;
 mod skin_render;
@@ -268,7 +267,6 @@ pub enum Scene {
     #[default]
     Select,
     Play,
-    KeyConfig,
 }
 
 /// 次に遊ぶ譜面
@@ -443,13 +441,6 @@ fn main() {
         input::read_input.after(bevy::input::InputSystems),
     )
     .add_systems(OnEnter(Scene::Select), select_scene::enter)
-    .add_systems(OnEnter(Scene::KeyConfig), keyconfig_scene::enter)
-    .add_systems(
-        Update,
-        (keyconfig_scene::input, keyconfig_scene::draw)
-            .chain()
-            .run_if(in_state(Scene::KeyConfig)),
-    )
     .add_systems(
         Update,
         (select_scene::input, select_scene::draw)
