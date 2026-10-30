@@ -181,6 +181,7 @@ pub fn input(
                 commands.insert_resource(PlayRequest {
                     path: sel.library.songs()[i].path.clone(),
                     auto,
+                    seed: None,
                 });
                 next.set(Scene::Play);
             }
@@ -382,6 +383,7 @@ pub fn skin_input(
                     commands.insert_resource(PlayRequest {
                         path: sel.library.songs()[i].path.clone(),
                         auto,
+                        seed: None,
                     });
                     next.set(Scene::Play);
                 }
