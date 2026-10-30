@@ -329,3 +329,59 @@ fn adp_sk_12_bar_layout(
         .collect();
     assert_eq!(map_skin(dc, None).bars, expected);
 }
+
+/// ADP-SK-13: `#FLIPSIDE` で 1P と 2P を入れ替える（DOM-SKD-23）
+#[rstest]
+#[case::flip(true, 13)]
+#[case::none(false, 3)]
+fn adp_sk_13_flip_side(#[case] flip: bool, #[case] lane: i32) {
+    let mut dc = doc(0, vec![], vec![element("NOTE", 3, sc::ElementKind::Other)]);
+    if flip {
+        dc.directives.push(sc::Directive {
+            command: "FLIPSIDE".into(),
+            args: vec![],
+        });
+    }
+    let got = map_skin(dc, None);
+    assert_eq!(got.elements[0].kind, d::ElementKind::NoteLane { lane });
+}
+
+fn customs() -> Vec<sc::Custom> {
+    vec![
+        sc::Custom::Option {
+            name: "Side".into(),
+            start_op: 900,
+            labels: vec!["1P".into(), "2P".into()],
+        },
+        sc::Custom::File {
+            name: "BG".into(),
+            pattern: "bg/*.png".into(),
+            default: "a".into(),
+        },
+        sc::Custom::Choice {
+            name: "Mode".into(),
+            items: vec![("x".into(), 950), ("y".into(), 960)],
+            default: None,
+        },
+    ]
+}
+
+/// ADP-SK-14: スキン設定の選択（項目名 → 選んだ名前）をヘッダの項目の添字ごとの選択にする。名前の無い・選べない項目は既定のまま
+#[rstest]
+#[case::option(vec![("Side", "2P")], vec![(0, sc::CustomChoice::Option(901))])]
+#[case::option_first(vec![("Side", "1P")], vec![(0, sc::CustomChoice::Option(900))])]
+#[case::unknown_label(vec![("Side", "3P")], vec![])]
+#[case::unknown_name(vec![("Nope", "2P")], vec![])]
+#[case::file(vec![("BG", "b")], vec![(1, sc::CustomChoice::File("b".into()))])]
+#[case::choice(vec![("Mode", "y")], vec![(2, sc::CustomChoice::Option(960))])]
+fn adp_sk_14_custom_choices(
+    #[case] chosen: Vec<(&str, &str)>,
+    #[case] want: Vec<(usize, sc::CustomChoice)>,
+) {
+    let chosen = chosen
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+    let got = custom_choices(&customs(), &chosen);
+    assert_eq!(got, want.into_iter().collect());
+}
