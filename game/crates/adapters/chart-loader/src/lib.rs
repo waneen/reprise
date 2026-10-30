@@ -14,7 +14,7 @@
 //! | ADP-CH-08 | 小節長の変化は `TimingEvent::Measure` として小節番号順に出す |
 //! | ADP-CH-09 | 音ファイルの解決（LR2 の `FindAltSound`）: 譜面のフォルダで書かれた名前、無ければ拡張子を ogg → wav → flac → mp3 に替えた名前（名前に既にその拡張子を含むものは飛ばす）、それも無ければ 1 つ上のフォルダの書かれた名前。名前の `\` は区切りとみなし、大小は区別しない |
 //! | ADP-CH-10 | 画像ファイルの解決（LR2 の `FindAltImage`）: 譜面のフォルダで書かれた名前、無ければ末尾 3 文字を png → jpg → bmp に替えた名前（名前に既にその拡張子を含むものは飛ばす）。無ければ 1 つ上のフォルダで同じ順に探す。大小は区別しない |
-use application::ports::{ChartLoader, PortError};
+use application::ports::{ChartLoader, FileSystem, PortError};
 use domain::{chart::*, random::LegacyMt};
 use md5::{Digest, Md5};
 use reprise_chart_core as rc;
@@ -204,12 +204,9 @@ pub fn map_chart(r: rc::ResolvedChart, hash: ChartHash) -> Chart {
 }
 
 /// フォルダの中から名前を大小無視で探す（同じ表記があればそれを優先）
-fn find_ci(dir: &Path, name: &str) -> Option<PathBuf> {
-    let mut list: Vec<(String, PathBuf)> = std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .map(|e| (e.file_name().to_string_lossy().into_owned(), e.path()))
-        .collect();
+fn find_ci(fs: &dyn FileSystem, dir: &Path, name: &str) -> Option<PathBuf> {
+    let mut list: Vec<(String, PathBuf)> =
+        fs.list(dir).into_iter().map(|e| (e.name, e.path)).collect();
     list.sort();
     list.iter()
         .find(|(n, _)| n == name)
@@ -218,7 +215,7 @@ fn find_ci(dir: &Path, name: &str) -> Option<PathBuf> {
 }
 
 /// `dir` からの相対パス（`/` か `\` 区切り）を 1 段ずつ大小無視で辿る
-fn find_rel(dir: &Path, rel: &str) -> Option<PathBuf> {
+fn find_rel(fs: &dyn FileSystem, dir: &Path, rel: &str) -> Option<PathBuf> {
     let mut cur = dir.to_path_buf();
     for part in rel
         .split(['/', '\\'])
@@ -227,15 +224,15 @@ fn find_rel(dir: &Path, rel: &str) -> Option<PathBuf> {
         cur = if part == ".." {
             cur.parent()?.to_path_buf()
         } else {
-            find_ci(&cur, part)?
+            find_ci(fs, &cur, part)?
         };
     }
-    cur.is_file().then_some(cur)
+    fs.is_file(&cur).then_some(cur)
 }
 
 /// 譜面の音ファイルを探す（ADP-CH-09）
-pub fn find_sound_file(chart_dir: &Path, name: &str) -> Option<PathBuf> {
-    if let Some(p) = find_rel(chart_dir, name) {
+pub fn find_sound_file(fs: &dyn FileSystem, chart_dir: &Path, name: &str) -> Option<PathBuf> {
+    if let Some(p) = find_rel(fs, chart_dir, name) {
         return Some(p);
     }
     let lower = name.to_ascii_lowercase();
@@ -247,15 +244,15 @@ pub fn find_sound_file(chart_dir: &Path, name: &str) -> Option<PathBuf> {
         if lower.contains(&format!(".{ext}")) {
             continue;
         }
-        if let Some(p) = find_rel(chart_dir, &format!("{stem}.{ext}")) {
+        if let Some(p) = find_rel(fs, chart_dir, &format!("{stem}.{ext}")) {
             return Some(p);
         }
     }
-    find_rel(chart_dir.parent()?, name)
+    find_rel(fs, chart_dir.parent()?, name)
 }
 
 /// 譜面の画像ファイル（BGA）を探す（ADP-CH-10）
-pub fn find_image_file(chart_dir: &Path, name: &str) -> Option<PathBuf> {
+pub fn find_image_file(fs: &dyn FileSystem, chart_dir: &Path, name: &str) -> Option<PathBuf> {
     let lower = name.to_ascii_lowercase();
     let mut names = vec![name.to_string()];
     if let Some(stem) = name
@@ -273,7 +270,7 @@ pub fn find_image_file(chart_dir: &Path, name: &str) -> Option<PathBuf> {
     [Some(chart_dir), chart_dir.parent()]
         .into_iter()
         .flatten()
-        .find_map(|dir| names.iter().find_map(|n| find_rel(dir, n)))
+        .find_map(|dir| names.iter().find_map(|n| find_rel(fs, dir, n)))
 }
 
 #[cfg(test)]
