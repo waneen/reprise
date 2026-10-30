@@ -155,6 +155,7 @@ struct Ctx<'a> {
     custom_index: usize,
     doc_images: Vec<ImageEntry>,
     doc_fonts: Vec<FontEntry>,
+    image_fonts: Vec<ImageFontEntry>,
     elements: Vec<Element>,
     directives: Vec<Directive>,
     diags: Vec<Diagnostic>,
@@ -181,6 +182,7 @@ pub fn decode(
         custom_index: 0,
         doc_images: vec![],
         doc_fonts: vec![],
+        image_fonts: vec![],
         elements: vec![],
         directives: vec![],
         diags: vec![],
@@ -191,6 +193,7 @@ pub fn decode(
         header: cx.header,
         images: cx.doc_images,
         fonts: cx.doc_fonts,
+        image_fonts: cx.image_fonts,
         elements: cx.elements,
         directives: cx.directives,
         diagnostics: cx.diags,
@@ -239,6 +242,45 @@ impl Ctx<'_> {
     fn resolve(&mut self, pattern: &str) -> Option<PathBuf> {
         let p = self.substitute(pattern);
         self.files.resolve(&p)
+    }
+
+    /// SKN-FNT-02: `.lr2font` を読み、画像はフォントファイルと同じフォルダから探す
+    fn image_font(&mut self, file: &Path, no: usize, raw: &str) -> ImageFontEntry {
+        let missing = |s: &mut Self, what: &str| {
+            s.diag(file, no, format!("フォントが見つからない: {what}"));
+            ImageFontEntry::Missing(normalize(raw))
+        };
+        let pattern = self.substitute(raw);
+        let Some(path) = self.files.resolve(&pattern) else {
+            return missing(self, raw);
+        };
+        let Ok(text) = read_text(&path, self.files) else {
+            return missing(self, raw);
+        };
+        let font = crate::lr2font::parse(&text);
+        let dir = pattern.rsplit_once('/').map_or("", |(d, _)| d);
+        let mut textures = vec![];
+        for (id, name) in font.textures {
+            let p = if dir.is_empty() {
+                name.clone()
+            } else {
+                format!("{dir}/{name}")
+            };
+            let entry = match self.files.resolve(&p) {
+                Some(found) => ImageEntry::File(found),
+                None => {
+                    self.diag(file, no, format!("フォントの画像が見つからない: {p}"));
+                    ImageEntry::Missing(p)
+                }
+            };
+            textures.push((id, entry));
+        }
+        ImageFontEntry::Loaded(ImageFont {
+            size: font.size,
+            margin: font.margin,
+            textures,
+            glyphs: font.glyphs,
+        })
     }
 
     fn process(&mut self, file: &Path, text: &str, depth: usize) {
@@ -369,15 +411,8 @@ impl Ctx<'_> {
                 kind: row.v(3),
             }),
             "#LR2FONT" => {
-                let raw = row.s(1);
-                let entry = match self.resolve(raw) {
-                    Some(p) => FontEntry::Bitmap(p),
-                    None => {
-                        self.diag(file, no, format!("フォントが見つからない: {raw}"));
-                        FontEntry::Missing(normalize(raw))
-                    }
-                };
-                self.doc_fonts.push(entry);
+                let entry = self.image_font(file, no, row.s(1));
+                self.image_fonts.push(entry);
             }
             "#INCLUDE" => {
                 // SKN-INC-01

@@ -95,6 +95,8 @@ pub struct PlaySkin {
     combo: i64,
     /// 片付いたノーツの数（空POOR・地雷を除く判定の数）
     processed: i64,
+    /// 文字列（APP-SKN-10）
+    texts: BTreeMap<i32, String>,
 }
 
 impl PlaySkin {
@@ -167,8 +169,27 @@ impl PlaySkin {
             measures.push(b);
             i += 1;
         }
+        // 文字列（APP-SKN-10）: 10 題名、11 副題、12 題名 + 空白 + 副題、13 ジャンル、14 アーティスト、15 副アーティスト
+        let m = &chart.meta;
+        let full = if m.subtitle.is_empty() {
+            m.title.clone()
+        } else {
+            format!("{} {}", m.title, m.subtitle)
+        };
+        let texts = [
+            (10, m.title.clone()),
+            (11, m.subtitle.clone()),
+            (12, full),
+            (13, m.genre.clone()),
+            (14, m.artist.clone()),
+            (15, m.subartist.clone()),
+        ]
+        .into_iter()
+        .filter(|(_, s)| !s.is_empty())
+        .collect();
         let hp = session.play().gauge();
         let mut s = Self {
+            texts,
             lead_in_ms,
             timing,
             scratch: 0,
@@ -485,6 +506,10 @@ impl SkinState for PlaySkin {
         } else {
             0.0
         }
+    }
+
+    fn text(&self, id: i32) -> Option<&str> {
+        self.texts.get(&id).map(String::as_str)
     }
 }
 

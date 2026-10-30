@@ -22,6 +22,8 @@ bevy = { version = "0.19.1", default-features = false, features = [
     "2d_bevy_render",
     "ui_bevy_render",
     "bevy_audio",
+    # TEXT のシステムフォント（OS のフォントから探す）
+    "system_font_discovery",
     "wav",
     "vorbis",
     "mp3",

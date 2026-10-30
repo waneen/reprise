@@ -28,7 +28,7 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Install Bevy の依存（Linux）
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libfontconfig-dev
       - name: Build
         working-directory: game
         run: cargo build -p reprise --release --target ${{ matrix.target }}

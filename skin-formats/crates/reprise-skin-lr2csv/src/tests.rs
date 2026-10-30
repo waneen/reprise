@@ -412,19 +412,88 @@ fn skn_img_02_backslash_normalized(#[case] line: &str) {
     assert_eq!(d.images, vec![ImageEntry::File("dir/a.png".into())]);
 }
 
-/// SKN-FNT-01: フォント
+/// SKN-FNT-01: `#FONT` は `fonts`、`#LR2FONT` は `image_fonts` に別々に並ぶ
 #[rstest]
-#[case::system("#FONT,24,3,1", FontEntry::System { size: 24, thickness: 3, kind: 1 })]
-#[case::bitmap("#LR2FONT,f.lr2font", FontEntry::Bitmap("f.lr2font".into()))]
-#[case::bitmap_missing("#LR2FONT,x.lr2font", FontEntry::Missing("x.lr2font".into()))]
-fn skn_fnt_01_fonts(#[case] line: &str, #[case] expected: FontEntry) {
+#[case::system_only("#FONT,24,3,1\n", vec![FontEntry::System { size: 24, thickness: 3, kind: 1 }], 0)]
+#[case::separate_numbering("#LR2FONT,f.lr2font\n#FONT,24,3,1\n#FONT,10,0,0\n", vec![FontEntry::System { size: 24, thickness: 3, kind: 1 }, FontEntry::System { size: 10, thickness: 0, kind: 0 }], 1)]
+fn skn_fnt_01_fonts(#[case] body: &str, #[case] fonts: Vec<FontEntry>, #[case] image_fonts: usize) {
     let d = decode_full(
         Dialect::Lr2,
-        &format!("{line}\n"),
-        &[("f.lr2font", b"")],
+        body,
+        &[("f.lr2font", b"#S,10\n")],
         &SkinSettings::default(),
     );
-    assert_eq!(d.fonts, vec![expected]);
+    assert_eq!(d.fonts, fonts);
+    assert_eq!(d.image_fonts.len(), image_fonts);
+}
+
+/// SKN-FNT-02: `.lr2font` を読み、画像はフォントファイルと同じフォルダから探す
+#[rstest]
+#[case::loaded("#LR2FONT,font/a.lr2font\n", ImageFontEntry::Loaded(ImageFont {
+    size: 20,
+    margin: 1,
+    textures: vec![(0, ImageEntry::File("font/a.png".into())), (1, ImageEntry::Missing("font/b.png".into()))],
+    glyphs: vec![Glyph { ch: 'A', texture: 0, rect: [1, 2, 3, 4] }],
+}), 1)]
+#[case::missing("#LR2FONT,font/x.lr2font\n", ImageFontEntry::Missing("font/x.lr2font".into()), 1)]
+fn skn_fnt_02_image_font(
+    #[case] body: &str,
+    #[case] expected: ImageFontEntry,
+    #[case] diags: usize,
+) {
+    let d = decode_full(
+        Dialect::Lr2,
+        body,
+        &[
+            (
+                "font/a.lr2font",
+                b"#S,20\n#M,1\n#T,0,a.png\n#T,1,b.png\n#R,65,0,1,2,3,4\n",
+            ),
+            ("font/a.png", b""),
+        ],
+        &SkinSettings::default(),
+    );
+    assert_eq!(d.image_fonts, vec![expected]);
+    assert_eq!(d.diagnostics.len(), diags);
+}
+
+/// SKN-LR2F-01: `.lr2font` の命令
+#[rstest]
+#[case::all("#S,24\n#M,2\n#T,0,a.png\n#R,65,0,1,2,3,4\n", 24, 2, vec![(0, "a.png")], vec![Glyph { ch: 'A', texture: 0, rect: [1, 2, 3, 4] }])]
+#[case::later_wins("#S,1\n#S,2\n#T,0,a.png\n#T,0,b\\c.png\n#R,65,0,1,1,1,1\n#R,65,1,2,2,2,2\n", 2, 0, vec![(0, "b/c.png")], vec![Glyph { ch: 'A', texture: 1, rect: [2, 2, 2, 2] }])]
+#[case::ignored_lines(" #S,5\nS,6\n#X,1\n#R,-1,0,1,1,1,1\n", 0, 0, vec![], vec![])]
+#[case::second_letter_only("#SIZE,9\n", 9, 0, vec![], vec![])]
+fn skn_lr2f_01_commands(
+    #[case] text: &str,
+    #[case] size: i32,
+    #[case] margin: i32,
+    #[case] textures: Vec<(i32, &str)>,
+    #[case] glyphs: Vec<Glyph>,
+) {
+    let f = lr2font::parse(text);
+    assert_eq!((f.size, f.margin), (size, margin));
+    assert_eq!(
+        f.textures,
+        textures
+            .into_iter()
+            .map(|(i, s)| (i, s.to_string()))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(f.glyphs, glyphs);
+}
+
+/// SKN-LR2F-02: 文字番号
+#[rstest]
+#[case::ascii(65, Some('A'))]
+#[case::half_kana(177, Some('ｱ'))]
+#[case::hiragana(608, Some('あ'))]
+#[case::kanji(2687, Some('漢'))]
+#[case::high_kanji(8223, Some('燿'))]
+#[case::undefined_byte(160, None)]
+#[case::negative(-1, None)]
+#[case::too_large(15307, None)]
+fn skn_lr2f_02_char_code(#[case] id: i32, #[case] want: Option<char>) {
+    assert_eq!(lr2font::glyph_char(id), want);
 }
 
 /// SKN-INC-01: #INCLUDE
