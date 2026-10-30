@@ -33,7 +33,7 @@ pub struct PlayView {
     pub survival: bool,
     /// ゲージのちらつき用の乱数（0..=2）
     pub tremble: i32,
-    /// ハイスピード（×100。LR2 の既定は 200）
+    /// ハイスピード（×100）× HS-FIX の倍率
     pub hi_speed: f64,
     pub notes: Vec<NoteView>,
     /// 小節線（判定までの拍数）
