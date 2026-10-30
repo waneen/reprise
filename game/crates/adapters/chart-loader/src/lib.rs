@@ -178,6 +178,7 @@ pub fn map_chart(r: rc::ResolvedChart, hash: ChartHash) -> Chart {
             title: m.title,
             subtitle: m.subtitle,
             artist: m.artist,
+            subartist: m.subartist,
             genre: m.genre,
             initial_bpm: m.initial_bpm,
             level: m.play_level,
