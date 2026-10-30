@@ -1,11 +1,12 @@
 //! Composition Root + プレゼンテーション層（Bevy はここだけ）。
 //! 記法を増やす = chart-formats/ か skin-formats/ に crate を足して、ここで 1 行登録するだけ。
 //!
-//! 使い方: `reprise <譜面ファイル> [オプション]`（オプションは [`USAGE`]）
+//! 使い方: `reprise --songs <フォルダ> [オプション]` で選曲から、`reprise <譜面ファイル> [オプション]` でその譜面のプレイから（オプションは [`USAGE`]）。
 //! 1P の 7 鍵（5 鍵）のプレイ画面。`--skin` で LR2 のプレイスキンで描き、無ければ四角形だけで描く。
 //! `--skin-root` はスキン中のパスの基準（LR2 なら LR2 本体のフォルダ。既定は今のフォルダ）。
 //! 記録は `--data` のフォルダ（既定は今のフォルダの `reprise-data`）の `score.db` に保存する。
 mod platform;
+mod select_scene;
 mod skin_render;
 
 use application::play::{KeyId, KeyInput, PlaySession, VisibleNote};
@@ -17,6 +18,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::audio::AudioSource;
 use bevy::camera::visibility::NoFrustumCulling;
 use bevy::camera::{OrthographicProjection, Projection, ScalingMode};
+use bevy::ecs::system::RunSystemOnce;
 use bevy::image::ImageSampler;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::mouse::MouseWheel;
@@ -29,10 +31,13 @@ use bevy::text::{FontSize, FontSource, FontWeight, TextLayoutInfo};
 use bevy::transform::TransformSystems;
 use bevy::window::{PresentMode, WindowResolution};
 use chart_loader::DecoderLoader;
+use domain::chart::ChartHash;
 use domain::chart::{Chart, ImageId, Lane, SoundId};
+use domain::play::RulesetId;
 use domain::play::{GaugeType, HsFix, Judge, PlayEvent};
 use domain::random::LegacyMt;
 use domain::score::{SaveMode, ScoreRecord};
+use domain::select::Library;
 use domain::skin::lr2::{draw_play, Draw, Quad, TextRun};
 use domain::skin::{SceneKind, Skin};
 use platform::{fatal, seed, Scores};
@@ -48,7 +53,7 @@ const LEAD_IN_MS: i64 = 2000;
 /// 判定ラインから上端までに見える拍数（スキン無しのとき）
 const VISIBLE_BEATS: f64 = 4.0;
 
-const USAGE: &str = "使い方: reprise <譜面ファイル> [--gauge groove|easy|hard|death|pattack|gattack] [--skin <スキン> [--skin-root <フォルダ>]] \
+const USAGE: &str = "使い方: reprise (--songs <譜面のフォルダ>... | <譜面ファイル>) [--gauge groove|easy|hard|death|pattack|gattack] [--skin <スキン> [--skin-root <フォルダ>]] \
 [--hs <ハイスピード×100>] [--hsfix off|max|min|avg|const|main] [--cover <0..100>] [--offset <ms>] [--auto] [--data <フォルダ>]";
 
 /// 記録などを置くフォルダの既定（今のフォルダから）
@@ -267,10 +272,59 @@ fn load(fs: &dyn FileSystem, path: &Path) -> Result<(Chart, Sounds), String> {
     Ok((chart, sounds))
 }
 
+/// 場面
+#[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum Scene {
+    #[default]
+    Select,
+    Play,
+}
+
+/// 次に遊ぶ譜面
+#[derive(Resource)]
+pub struct PlayRequest {
+    pub path: PathBuf,
+    /// 選曲でオートプレイを選んだ
+    pub auto: bool,
+}
+
+/// 起動時に決めたこと（どのプレイにも使う）
+#[derive(Resource)]
+struct Boot {
+    fs: Arc<dyn FileSystem>,
+    gauge: GaugeType,
+    options: PlayOptions,
+    skin_path: Option<PathBuf>,
+    skin_root: PathBuf,
+    /// 譜面を直接渡して起動した（終わったら選曲に戻らずに終了する）
+    direct: bool,
+}
+
+/// 記録の保存先（開けなければ・ブラウザ版は None。sqlite の接続は Sync でないので Mutex に入れる）
+#[derive(Resource)]
+pub struct ScoreDb(Option<Mutex<Scores>>);
+
+impl ScoreDb {
+    pub fn find(&self, chart: &ChartHash, ruleset: RulesetId) -> Option<ScoreRecord> {
+        let db = self.0.as_ref()?.lock().ok()?;
+        db.find(chart, ruleset).ok().flatten()
+    }
+}
+
+/// 一覧などの文字のフォント（ブラウザ版は OS のフォントを探せないので Bevy の既定のフォント。日本語の字は無い）
+pub fn list_font() -> FontSource {
+    if cfg!(target_arch = "wasm32") {
+        TextFont::default().font
+    } else {
+        FontSource::SansSerif
+    }
+}
+
 fn main() {
     let args = platform::args();
     let fs = platform::file_system();
     let mut chart_path = None;
+    let mut song_roots = vec![];
     let mut gauge = GaugeType::Groove;
     let mut skin_path = None;
     let mut skin_root = platform::default_skin_root();
@@ -282,6 +336,7 @@ fn main() {
         let mut value = || it.next().unwrap_or_else(|| usage());
         let mut number = || value().parse::<i32>().unwrap_or_else(|_| usage());
         match a.as_str() {
+            "--songs" => song_roots.push(PathBuf::from(value())),
             "--skin" => skin_path = Some(PathBuf::from(value())),
             "--skin-root" => skin_root = PathBuf::from(value()),
             "--gauge" => gauge = parse_gauge(value()).unwrap_or_else(|| usage()),
@@ -299,29 +354,143 @@ fn main() {
         }
     }
     let options = options.clamped();
-    let Some(chart_path) = chart_path else {
+    if chart_path.is_none() && song_roots.is_empty() {
         usage();
-    };
+    }
     #[cfg(not(target_arch = "wasm32"))]
     let _ = platform::score_importers();
-    let scores = platform::open_scores(&data_dir).map(Mutex::new);
-    let skin = match skin_path.map(|p| load_skin(&fs, &p, skin_root)).transpose() {
-        Ok(v) => v,
-        Err(e) => fatal(&e, 1),
+    let scores = ScoreDb(platform::open_scores(&data_dir).map(Mutex::new));
+    let direct = chart_path.is_some();
+    let library = if direct {
+        Library::default()
+    } else {
+        let lib = application::usecase::scan_library(fs.as_ref(), &chart_loaders(), &song_roots);
+        eprintln!("譜面 {} 件", lib.songs().len());
+        lib
     };
-    let (chart, sounds) = match load(fs.as_ref(), &chart_path) {
-        Ok(v) => v,
-        Err(e) => fatal(&e, 1),
+
+    let mut app = App::new();
+    app.add_plugins(DefaultPlugins.set(WindowPlugin {
+        primary_window: Some(Window {
+            title: "reprise".into(),
+            resolution: WindowResolution::new(1280, 720),
+            // LR2 と同じく入力を読むループをできるだけ速く回す（ブラウザでは画面の更新に合わせて回る）
+            present_mode: PresentMode::AutoNoVsync,
+            // ブラウザ版はページの canvas に描き、大きさをページに合わせる
+            canvas: cfg!(target_arch = "wasm32").then(|| "#bevy".into()),
+            fit_canvas_to_parent: true,
+            ..default()
+        }),
+        ..default()
+    }))
+    .add_plugins(SkinRenderPlugin)
+    .insert_state(if direct { Scene::Play } else { Scene::Select })
+    .insert_resource(Boot {
+        fs,
+        gauge,
+        options,
+        skin_path,
+        skin_root,
+        direct,
+    })
+    .insert_resource(scores)
+    .insert_resource(select_scene::Selection::new(library))
+    .add_systems(OnEnter(Scene::Select), select_scene::enter)
+    .add_systems(
+        Update,
+        (select_scene::input, select_scene::draw)
+            .chain()
+            .run_if(in_state(Scene::Select)),
+    )
+    .add_systems(OnEnter(Scene::Play), enter_play)
+    .add_systems(OnExit(Scene::Play), exit_play)
+    .add_systems(
+        Update,
+        (
+            play_frame,
+            leave_play,
+            (draw_notes, draw_hud)
+                .run_if(|g: Option<Res<Game>>| g.is_some_and(|g| g.skin.is_none())),
+            draw_skin.run_if(|g: Option<Res<Game>>| g.is_some_and(|g| g.skin.is_some() && !g.over)),
+            show_result.run_if(|g: Option<Res<Game>>| g.is_some_and(|g| g.over)),
+        )
+            .chain()
+            .run_if(in_state(Scene::Play).and_then(resource_exists::<Game>)),
+    )
+    .add_systems(
+        PostUpdate,
+        place_text
+            .after(update_text2d_layout)
+            .before(TransformSystems::Propagate),
+    );
+    if let Some(path) = chart_path {
+        app.insert_resource(PlayRequest { path, auto: false });
+    }
+    app.run();
+}
+
+/// 譜面とスキンを読み込んでプレイを始める。読めなければ選曲に戻る（直接起動なら終了）
+fn enter_play(world: &mut World) {
+    let Some(req) = world.remove_resource::<PlayRequest>() else {
+        return;
     };
+    let boot = world.resource::<Boot>();
+    match prepare_play(boot, &req) {
+        Ok((game, sounds, images, title)) => {
+            world.insert_resource(game);
+            world.insert_resource(PendingSounds(sounds));
+            world.insert_resource(PendingImages(images));
+            if let Ok(mut w) = world.query::<&mut Window>().single_mut(world) {
+                w.title = title;
+            }
+            if let Err(e) = world.run_system_once(setup) {
+                eprintln!("{e}");
+            }
+        }
+        Err(e) if boot.direct => fatal(&e, 1),
+        Err(e) => {
+            eprintln!("{e}");
+            world.resource_mut::<NextState<Scene>>().set(Scene::Select);
+        }
+    }
+}
+
+/// プレイの片付け（実体は `DespawnOnExit` で消える）
+fn exit_play(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    old: Query<&Mesh2d, With<SkinSprite>>,
+) {
+    for m in &old {
+        meshes.remove(&m.0);
+    }
+    commands.remove_resource::<Game>();
+}
+
+type Prepared = (Game, Sounds, Vec<Option<Pixels>>, String);
+
+/// 譜面・音・スキン・BGA を読み、プレイの状態を作る
+fn prepare_play(boot: &Boot, req: &PlayRequest) -> Result<Prepared, String> {
+    let fs = &boot.fs;
+    let options = PlayOptions {
+        auto: boot.options.auto || req.auto,
+        ..boot.options
+    };
+    let skin = boot
+        .skin_path
+        .as_ref()
+        .map(|p| load_skin(fs, p, boot.skin_root.clone()))
+        .transpose()?;
+    let (chart, sounds) = load(fs.as_ref(), &req.path)?;
     let input = KeyInput::new(
         KEYMAP
             .iter()
             .enumerate()
             .map(|(i, (_, lane))| (i as KeyId, Lane(*lane))),
     );
-    let Some(mut session) = PlaySession::new(&chart, gauge, input) else {
-        fatal("LR2 にこのゲージは無い", 2);
-    };
+    let gauge = boot.gauge;
+    let mut session =
+        PlaySession::new(&chart, gauge, input).ok_or("LR2 にこのゲージは無い".to_string())?;
     if options.auto {
         session.set_autoplay(options.judge_offset as i64);
     }
@@ -332,7 +501,7 @@ fn main() {
                 sounds.iter().map(|(id, b)| (*id, sound_ms(b))).collect();
             // 描画側の画像 = スキンの画像、BGA の画像、単色用の白 1 画素 の順
             let mut bga_images = BTreeMap::new();
-            for (id, px) in load_bga(fs.as_ref(), &chart, &chart_path) {
+            for (id, px) in load_bga(fs.as_ref(), &chart, &req.path) {
                 bga_images.insert(id, images.len() as u32);
                 images.push(Some(px));
             }
@@ -371,56 +540,20 @@ fn main() {
     let lead_in_ms = skin_play
         .as_ref()
         .map_or(LEAD_IN_MS, |sp| sp.play.lead_in_ms());
-
-    App::new()
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title,
-                resolution: WindowResolution::new(1280, 720),
-                // LR2 と同じく入力を読むループをできるだけ速く回す（ブラウザでは画面の更新に合わせて回る）
-                present_mode: PresentMode::AutoNoVsync,
-                // ブラウザ版はページの canvas に描き、大きさをページに合わせる
-                canvas: cfg!(target_arch = "wasm32").then(|| "#bevy".into()),
-                fit_canvas_to_parent: true,
-                ..default()
-            }),
-            ..default()
-        }))
-        .add_plugins(SkinRenderPlugin)
-        .insert_resource(Game {
-            session,
-            lead_in_ms,
-            scratch: [false; 2],
-            control: [false; 2],
-            scores,
-            save_mode: options.save_mode(),
-            saved: None,
-            over: false,
-            start: None,
-            last_judge: None,
-            sounds: HashMap::new(),
-            skin: skin_play,
-        })
-        .insert_resource(PendingSounds(sounds))
-        .insert_resource(PendingImages(pending_images))
-        .add_systems(Startup, setup)
-        .add_systems(
-            Update,
-            (
-                play_frame,
-                (draw_notes, draw_hud).run_if(|g: Res<Game>| g.skin.is_none()),
-                draw_skin.run_if(|g: Res<Game>| g.skin.is_some() && !g.over),
-                show_result.run_if(|g: Res<Game>| g.over),
-            )
-                .chain(),
-        )
-        .add_systems(
-            PostUpdate,
-            place_text
-                .after(update_text2d_layout)
-                .before(TransformSystems::Propagate),
-        )
-        .run();
+    let game = Game {
+        session,
+        lead_in_ms,
+        scratch: [false; 2],
+        control: [false; 2],
+        save_mode: options.save_mode(),
+        saved: None,
+        over: false,
+        start: None,
+        last_judge: None,
+        sounds: HashMap::new(),
+        skin: skin_play,
+    };
+    Ok((game, sounds, pending_images, title))
 }
 
 /// LR2 スキンで描くための状態
@@ -449,8 +582,6 @@ struct Game {
     scratch: [bool; 2],
     /// START・SELECT を押しているか
     control: [bool; 2],
-    /// 記録の保存先（開けなければ・ブラウザ版は None。sqlite の接続は Sync でないので Mutex に入れる）
-    scores: Option<Mutex<Scores>>,
     /// 何を保存するか（None は保存しない）
     save_mode: Option<SaveMode>,
     /// 保存の結果（保存したら Some。保存しなかったら Some(None)）
@@ -518,6 +649,7 @@ fn setup(
                 },
                 ..OrthographicProjection::default_2d()
             }),
+            DespawnOnExit(Scene::Play),
         ));
         sp.handles = pending_images
             .0
@@ -544,7 +676,7 @@ fn setup(
             .collect();
         return;
     }
-    commands.spawn(Camera2d);
+    commands.spawn((Camera2d, DespawnOnExit(Scene::Play)));
     // レーンの背景と判定ライン
     for lane in 0..=7u8 {
         let (x, w) = lane_x(lane);
@@ -552,12 +684,14 @@ fn setup(
         commands.spawn((
             Sprite::from_color(Color::srgb(c, c, c), Vec2::new(w - 2.0, LANE_H)),
             Transform::from_xyz(x, JUDGE_Y + LANE_H / 2.0, 0.0),
+            DespawnOnExit(Scene::Play),
         ));
     }
     let width = SCRATCH_W + KEY_W * 7.0;
     commands.spawn((
         Sprite::from_color(Color::srgb(0.9, 0.2, 0.2), Vec2::new(width, 4.0)),
         Transform::from_xyz(LANE_LEFT + width / 2.0, JUDGE_Y, 1.0),
+        DespawnOnExit(Scene::Play),
     ));
     commands.spawn((
         Text::new(""),
@@ -569,6 +703,7 @@ fn setup(
             ..default()
         },
         Hud,
+        DespawnOnExit(Scene::Play),
     ));
 }
 
@@ -581,8 +716,27 @@ struct BevyAudio<'a, 'w, 's> {
 impl AudioOutput for BevyAudio<'_, '_, '_> {
     fn play(&mut self, sound: SoundId, _at_us: i64) {
         if let Some(h) = self.sounds.get(&sound) {
-            self.commands
-                .spawn((AudioPlayer::new(h.clone()), PlaybackSettings::DESPAWN));
+            self.commands.spawn((
+                AudioPlayer::new(h.clone()),
+                PlaybackSettings::DESPAWN,
+                DespawnOnExit(Scene::Play),
+            ));
+        }
+    }
+}
+
+/// Esc で選曲に戻る（譜面を直接渡して起動したなら終了）
+fn leave_play(
+    keys: Res<ButtonInput<KeyCode>>,
+    boot: Res<Boot>,
+    mut next: ResMut<NextState<Scene>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    if keys.just_pressed(KeyCode::Escape) {
+        if boot.direct {
+            exit.write(AppExit::Success);
+        } else {
+            next.set(Scene::Select);
         }
     }
 }
@@ -593,7 +747,7 @@ fn play_frame(
     mut keys: MessageReader<KeyboardInput>,
     mut wheel: MessageReader<MouseWheel>,
     mut game: ResMut<Game>,
-    mut exit: MessageWriter<AppExit>,
+    mut scores: ResMut<ScoreDb>,
 ) {
     let mut events: Vec<(KeyId, bool)> = vec![];
     // START・SELECT は前のフレームから押し続けているかを見る
@@ -607,9 +761,6 @@ fn play_frame(
             continue;
         }
         let down = k.state == ButtonState::Pressed;
-        if k.key_code == KeyCode::Escape && down {
-            exit.write(AppExit::Success);
-        }
         for (i, code) in [START, SELECT].into_iter().enumerate() {
             if k.key_code == code {
                 game.control[i] = down;
@@ -659,7 +810,7 @@ fn play_frame(
     // 終わったら 1 回だけ記録を保存する
     if game.saved.is_none() && game.session.play().is_finished() {
         let record = game.session.record();
-        let saved = match game.scores.as_mut().and_then(|m| m.get_mut().ok()) {
+        let saved = match scores.0.as_mut().and_then(|m| m.get_mut().ok()) {
             Some(db) => application::usecase::save_play(db.as_mut(), &record, game.save_mode)
                 .map_err(|e| eprintln!("記録を保存できない: {e:?}"))
                 .ok()
@@ -744,6 +895,7 @@ fn draw_skin(
                 MeshMaterial2d(material),
                 Transform::from_xyz(0.0, 0.0, *z),
                 SkinSprite,
+                DespawnOnExit(Scene::Play),
             ));
             *z += 0.001;
         }
@@ -824,6 +976,7 @@ fn draw_skin(
                             z,
                             res,
                         },
+                        DespawnOnExit(Scene::Play),
                     ))
                     .id();
                 sp.texts.push(e);
@@ -880,7 +1033,7 @@ fn show_result(
     let c = play.counts();
     commands.spawn((
         Text::new(format!(
-            "RESULT: {:?}\nEX SCORE {}\nPG {}  GR {}  GD {}  BD {}  PR {}\nMAX COMBO {} / {}\n{}\n\nPress Esc to quit",
+            "RESULT: {:?}\nEX SCORE {}\nPG {}  GR {}  GD {}  BD {}  PR {}\nMAX COMBO {} / {}\n{}\n\nPress Esc to finish",
             game.session.record().lamp,
             c.ex_score(),
             c.pgreat,
@@ -900,6 +1053,7 @@ fn show_result(
             ..default()
         },
         ResultText,
+        DespawnOnExit(Scene::Play),
     ));
 }
 
@@ -967,12 +1121,14 @@ fn draw_notes(mut commands: Commands, game: Res<Game>, old: Query<Entity, With<N
                 ),
                 Transform::from_xyz(x, (head + tail) / 2.0, 2.0),
                 NoteSprite,
+                DespawnOnExit(Scene::Play),
             ));
         }
         commands.spawn((
             Sprite::from_color(color, Vec2::new(w - 4.0, NOTE_H)),
             Transform::from_xyz(x, head, 3.0),
             NoteSprite,
+            DespawnOnExit(Scene::Play),
         ));
     }
 }
@@ -1009,7 +1165,7 @@ fn draw_hud(game: Res<Game>, mut hud: Query<&mut Text, With<Hud>>) {
     );
     if play.is_finished() {
         s += &format!(
-            "\n\nRESULT: {:?}\n{}\nPress Esc to quit",
+            "\n\nRESULT: {:?}\n{}\nPress Esc to finish",
             game.session.record().lamp,
             best_text(game.saved.as_ref())
         );
