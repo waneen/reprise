@@ -90,6 +90,9 @@ pub struct ResultInput<'a> {
     pub slots: &'a [(usize, bool)],
     /// 1P の操作を押しているか
     pub held: [bool; SLOTS],
+    /// 2P の操作の押下・離しと押しているか（LR2 は SP のプレイ以外では 2P の割り当てを 2P として読む）
+    pub slots_p2: &'a [(usize, bool)],
+    pub held_p2: [bool; SLOTS],
     /// Esc・Enter を押した
     pub escape: bool,
     pub enter: bool,
@@ -117,6 +120,7 @@ pub struct ResultSkin {
     now: i64,
     starts: BTreeMap<i32, i64>,
     keys: KeyTimers,
+    keys_p2: KeyTimers,
     /// 閉じ始めた（タイマー 2。LR2 の `procPhase == 2`）
     closing: bool,
     result: PlayResult,
@@ -143,6 +147,7 @@ impl ResultSkin {
             now: 0,
             starts: BTreeMap::new(),
             keys: KeyTimers::default(),
+            keys_p2: KeyTimers::p2(),
             closing: false,
             result,
         };
@@ -180,12 +185,16 @@ impl ResultSkin {
             for &(slot, down) in input.slots {
                 self.keys.apply(&mut self.starts, now_ms, slot, down);
             }
+            for &(slot, down) in input.slots_p2 {
+                self.keys_p2.apply(&mut self.starts, now_ms, slot, down);
+            }
         }
-        // APP-RES-02: 鍵盤 1〜7 の押下・Esc・Enter・マウスの左右の押し続け
+        // APP-RES-02: 1P・2P の鍵盤 1〜7 の押下・Esc・Enter・マウスの左右の押し続け
         let keys = (1..=7).map(key_slot).collect::<Vec<_>>();
         let decide = input
             .slots
             .iter()
+            .chain(input.slots_p2)
             .any(|&(s, down)| down && keys.contains(&s))
             || input.escape
             || input.enter
@@ -197,7 +206,10 @@ impl ResultSkin {
             // APP-RES-03: タイマー 2 から `#FADEOUT` を過ぎたら（0 なら次のフレームで）閉じる
             let t = self.timer(2).unwrap_or(0);
             if self.timing.fade_out == 0 || t > self.timing.fade_out as i64 {
-                let held = |n: &[usize]| n.iter().any(|&k| input.held[key_slot(k)]);
+                let held = |n: &[usize]| {
+                    n.iter()
+                        .any(|&k| input.held[key_slot(k)] || input.held_p2[key_slot(k)])
+                };
                 out = Some(if held(&[1, 3, 5, 7]) && held(&[2, 4, 6]) {
                     ResultExit::Retry
                 } else {

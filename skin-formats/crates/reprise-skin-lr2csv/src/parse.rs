@@ -439,6 +439,10 @@ impl Ctx<'_> {
                 } else if let Some(name) = cmd.strip_prefix("#DST_") {
                     self.dst(file, no, name, row);
                 } else {
+                    // SKN-DIR-02: LR2 は `#INCLUDE` 先の `#FLIPSIDE` を効かせない（`ReadSkin` の `flipside` はファイルごと）
+                    if depth > 0 && cmd == "#FLIPSIDE" && self.dialect == Dialect::Lr2 {
+                        return;
+                    }
                     // SKN-DIR-01
                     self.directives.push(Directive {
                         command: cmd.trim_start_matches('#').to_string(),
@@ -602,5 +606,53 @@ impl Ctx<'_> {
             e.order = self.lines;
         }
         e.keyframes.push(kf);
+    }
+}
+
+#[cfg(test)]
+mod include_tests {
+    use super::*;
+    use rstest::rstest;
+
+    /// 名前 → 中身のファイル
+    struct Files(Vec<(&'static str, &'static [u8])>);
+    impl FileResolver for Files {
+        fn resolve(&mut self, pattern: &str) -> Option<PathBuf> {
+            self.0
+                .iter()
+                .any(|(n, _)| *n == pattern)
+                .then(|| PathBuf::from(pattern))
+        }
+        fn read(&mut self, path: &Path) -> Result<Vec<u8>, String> {
+            self.0
+                .iter()
+                .find(|(n, _)| Path::new(n) == path)
+                .map(|(_, b)| b.to_vec())
+                .ok_or_else(|| "none".into())
+        }
+    }
+
+    /// SKN-DIR-02: `#INCLUDE` 先の `#FLIPSIDE` は残さない（Lr2）
+    #[rstest]
+    #[case::top_level(Dialect::Lr2, b"#FLIPSIDE\n#INCLUDE,inc.csv\n".as_slice(), b"".as_slice(), vec!["FLIPSIDE"])]
+    #[case::included(Dialect::Lr2, b"#INCLUDE,inc.csv\n".as_slice(), b"#FLIPSIDE\n".as_slice(), vec![])]
+    #[case::other_included_kept(Dialect::Lr2, b"#INCLUDE,inc.csv\n".as_slice(), b"#B_LONG,1\n".as_slice(), vec!["B_LONG"])]
+    #[case::standard_kept(Dialect::Standard, b"#INCLUDE,inc.csv\n".as_slice(), b"#FLIPSIDE\n".as_slice(), vec!["FLIPSIDE"])]
+    fn skn_dir_02_included_flipside(
+        #[case] dialect: Dialect,
+        #[case] main: &'static [u8],
+        #[case] inc: &'static [u8],
+        #[case] want: Vec<&str>,
+    ) {
+        let mut files = Files(vec![("main.csv", main), ("inc.csv", inc)]);
+        let d = decode(
+            Path::new("main.csv"),
+            &SkinSettings::default(),
+            &mut files,
+            dialect,
+        )
+        .expect("decode");
+        let got: Vec<&str> = d.directives.iter().map(|x| x.command.as_str()).collect();
+        assert_eq!(got, want);
     }
 }

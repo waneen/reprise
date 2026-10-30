@@ -35,13 +35,24 @@ pub enum Side {
     P2,
 }
 
+/// 割り当ての読み方（LR2 `InputToButton` の第 3 引数 player。DOM-INP-05）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Reading {
+    /// 1P の操作として 1P の割り当てを読む（player 0 の 1P 側）
+    P1,
+    /// 2P の操作として 2P の割り当てを読む（player 0 の 2P 側）
+    P2,
+    /// SP のプレイ: 1P の操作として 1P と 2P の割り当てをまとめて読む（player 1）
+    Single,
+}
+
 /// 操作ごとの物理入力（DOM-INP-01, 02）。位置（0..16）は LR2 の `buttonMap[キー][位置]` と同じで、空いた位置は None
 /// （末尾の空きは持たない）
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bindings {
     /// 1P の操作
     pub slots: [Vec<Option<Source>>; SLOTS],
-    /// 2P の操作（キー設定で置けて保存もするが、2P 側は未対応なので入力としては読まない）
+    /// 2P の操作（選曲・キー設定・リザルトでは 2P の操作として、SP のプレイでは 1P の操作として読む。DOM-INP-05）
     pub p2: [Vec<Option<Source>>; SLOTS],
     /// 皿に割り当てた軸をアナログ皿として読む（DOM-INP-04）。None ならボタンとして読む（DOM-INP-03）
     pub analog_scratch_ms: Option<u32>,
@@ -113,12 +124,31 @@ impl Bindings {
 
     /// 1P の操作 `slot` に置いた物理入力
     pub fn sources(&self, slot: usize) -> impl Iterator<Item = &Source> {
-        self.slots[slot].iter().flatten()
+        self.sources_in(Reading::P1, slot)
     }
 
     /// 物理入力を置いている 1P の操作（いくつでも）
     pub fn slots_of<'a>(&'a self, source: &'a Source) -> impl Iterator<Item = usize> + 'a {
-        (0..SLOTS).filter(move |&i| self.sources(i).any(|s| s == source))
+        self.slots_in(Reading::P1, source)
+    }
+
+    /// 読み方 `reading` で操作 `slot` に当たる物理入力（DOM-INP-05。SP は 1P の後に 2P）
+    pub fn sources_in(&self, reading: Reading, slot: usize) -> impl Iterator<Item = &Source> {
+        let (a, b): (&[Option<Source>], &[Option<Source>]) = match reading {
+            Reading::P1 => (&self.slots[slot], &[]),
+            Reading::P2 => (&self.p2[slot], &[]),
+            Reading::Single => (&self.slots[slot], &self.p2[slot]),
+        };
+        a.iter().chain(b).flatten()
+    }
+
+    /// 読み方 `reading` で物理入力が当たる操作（いくつでも）
+    pub fn slots_in<'a>(
+        &'a self,
+        reading: Reading,
+        source: &'a Source,
+    ) -> impl Iterator<Item = usize> + 'a {
+        (0..SLOTS).filter(move |&i| self.sources_in(reading, i).any(|s| s == source))
     }
 }
 

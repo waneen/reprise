@@ -47,6 +47,7 @@
 //! | SKN-DST-05 | 描画順 = 最初の DST 行が何番目に処理した命令行か（`#IF` で飛ばした行・`#IF` 系の行は数えない） |
 //! | SKN-BLD-01 | 合成: 0=None 1=Alpha 2=Add 3=Sub 4=Mul 5=Sub2 9=InvDest 10=InvSrc 11=MulAlpha、それ以外は Alpha + 診断 |
 //! | SKN-DIR-01 | 上記以外の命令は `directives` に生のまま残す |
+//! | SKN-DIR-02 | (Lr2) `#INCLUDE` 先のファイルの `#FLIPSIDE` は残さない（LR2 は最上位のファイルの `#FLIPSIDE` だけを効かせる。OpenLR2 `ReadSkin` の `flipside` はファイルごと） |
 
 use reprise_skin_core::*;
 use std::path::Path;
