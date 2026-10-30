@@ -90,7 +90,16 @@ fn run_opts(
     options: PlayOptions,
     frames: &[(i64, &[(KeyId, bool)])],
 ) -> (PlaySession, PlaySkin) {
-    let c = chart(measure0);
+    run_chart(chart(measure0), gauge, sound_ms, options, frames)
+}
+
+fn run_chart(
+    c: Chart,
+    gauge: GaugeType,
+    sound_ms: &BTreeMap<SoundId, i64>,
+    options: PlayOptions,
+    frames: &[(i64, &[(KeyId, bool)])],
+) -> (PlaySession, PlaySkin) {
     let input = KeyInput::new([(0, Lane(0)), (1, Lane(1)), (2, Lane(2))]);
     let mut s = PlaySession::new(&c, gauge, input).unwrap();
     if options.auto {
@@ -200,15 +209,40 @@ fn app_skn_04_gauge_and_progress(
 /// 104/105/106 = コンボ・最大コンボ・総ノーツ、107 = 表示 HP、110..114 = 判定数、115 = 総ノーツに対する率、160 = BPM、
 /// 161/162 = 経過の分・秒、163/164 = 残りの分・秒（1 秒未満は無し）
 #[rstest]
-#[case::two_pgreats(&[(1000, PRESS1), (1100, UP1), (2000, PRESS1), (2100, UP1), (2600, NONE)], vec![
+#[case::two_pgreats(false, &[(1000, PRESS1), (1100, UP1), (2000, PRESS1), (2100, UP1), (2600, NONE)], vec![
     Num(100, Some(133333)), Num(101, Some(4)), Num(102, Some(100)), Num(103, Some(0)), Num(104, Some(2)), Num(105, Some(2)),
     Num(106, Some(3)), Num(107, Some(100)), Num(110, Some(2)), Num(111, Some(0)), Num(114, Some(0)), Num(115, Some(66)),
     Num(160, Some(60)), Num(161, Some(0)), Num(162, Some(2)), Num(163, Some(0)), Num(164, Some(2)),
 ])]
-#[case::great_rate(&[(1030, PRESS1), (1100, UP1)], vec![Num(101, Some(1)), Num(102, Some(50)), Num(103, Some(0)), Num(111, Some(1))])]
-#[case::before_any(&[(500, NONE)], vec![Num(102, None), Num(161, None), Num(162, None), Num(163, Some(0)), Num(164, Some(4)), Num(999, None)])]
-fn app_skn_05_numbers(#[case] frames: &[(i64, &[(KeyId, bool)])], #[case] probes: Vec<P>) {
-    let (_, k) = run(GaugeType::Groove, None, frames);
+#[case::great_rate(false, &[(1030, PRESS1), (1100, UP1)], vec![Num(101, Some(1)), Num(102, Some(50)), Num(103, Some(0)), Num(111, Some(1))])]
+#[case::before_any(false, &[(500, NONE)], vec![Num(102, None), Num(161, None), Num(162, None), Num(163, Some(0)), Num(164, Some(4)), Num(999, None)])]
+// 0.5 拍の地雷を踏むと POOR 1（LR2 の judgecount[1]）、114 は地雷をもう 1 度足して 2
+#[case::mine(true, &[(500, PRESS1), (600, UP1)], vec![Num(114, Some(2)), Num(104, Some(0))])]
+fn app_skn_05_numbers(
+    #[case] mine: bool,
+    #[case] frames: &[(i64, &[(KeyId, bool)])],
+    #[case] probes: Vec<P>,
+) {
+    let mut c = chart(None);
+    if mine {
+        c.notes.insert(
+            0,
+            Note {
+                beat: Beat(0.5),
+                lane: Lane(1),
+                kind: NoteKind::Mine { damage_raw: 2 },
+                sound: None,
+            },
+        );
+    }
+    let (_, k) = run_chart(
+        c,
+        GaugeType::Groove,
+        &BTreeMap::new(),
+        PlayOptions::default(),
+        frames,
+    );
+    assert_eq!(k.mines, u32::from(mine));
     check(&k, &probes);
 }
 
@@ -499,10 +533,61 @@ fn app_skn_13_result(
     let dead = s.play().is_dead();
     assert_eq!(dead, gauge == GaugeType::Hazard);
     assert_eq!(r.graph[999], if dead { 0 } else { r.hp as i32 });
+    // 片付いていないノーツが残れば HP は 0
+    if dead {
+        assert_eq!(r.hp, 0.0);
+    } else {
+        assert_eq!(r.hp, s.play().gauge());
+    }
+    assert_eq!(r.mines, 0);
     assert_eq!((r.total, r.processed), (3, processed));
     assert_eq!(r.groove, gauge == GaugeType::Groove);
     assert_eq!(r.lamp, s.play().clear_lamp());
     assert_eq!(r.counts, s.play().counts());
     assert_eq!(r.texts, k.texts);
     assert_eq!(r.saved, None);
+}
+
+/// APP-SKN-14: 途中終了。閉じ始める前に Esc・マウスの右の状態 2・START と SELECT・（全ノーツの後は）START か SELECT で
+/// タイマー 2 を始め、グラフを埋め（残りがあれば 0）、以後は判定しない
+#[rstest]
+#[case::escape(QuitInput { escape: true, ..Default::default() }, 1000, true)]
+#[case::mouse_right_held(QuitInput { mouse_right: 2, ..Default::default() }, 1000, true)]
+#[case::mouse_right_pressed(QuitInput { mouse_right: 1, ..Default::default() }, 1000, false)]
+#[case::start_and_select(QuitInput { start_held: true, select_held: true, ..Default::default() }, 1000, true)]
+#[case::start_only_mid_song(QuitInput { start_held: true, ..Default::default() }, 1000, false)]
+#[case::start_only_after_all_notes(QuitInput { start_held: true, ..Default::default() }, 6000, true)]
+#[case::select_only_after_all_notes(QuitInput { select_held: true, ..Default::default() }, 6000, true)]
+#[case::nothing(QuitInput::default(), 1000, false)]
+fn app_skn_14_quit(#[case] input: QuitInput, #[case] at: i64, #[case] quits: bool) {
+    // LN の終端の音を 2000ms にして曲の長さを 7000ms にする。6000ms には 3 つのノーツをすべて片付けている
+    let sounds = [(SoundId(1), 2000)].into_iter().collect();
+    // 1 フレームに 1 レーン 1 ノーツなので 1 秒ごとに進める
+    let frames: Vec<(i64, &[(KeyId, bool)])> = (0..=at / 1000).map(|i| (i * 1000, NONE)).collect();
+    let (mut s, mut k) = run_with(GaugeType::Groove, None, &sounds, &frames);
+    let total = s.play().total_notes();
+    k.quit(&input, total);
+    assert_eq!(k.quitting(), quits);
+    assert_eq!(k.timer(2), quits.then_some(0));
+    if !quits {
+        return;
+    }
+    let r = k.result(&s, None);
+    let unfinished = r.processed < total;
+    assert_eq!(unfinished, at == 1000);
+    // グラフは終わりまで埋める（残りがあれば 0）
+    assert_eq!(r.graph[999], if unfinished { 0 } else { r.hp as i32 });
+    // 以後は判定しない（PlaySession を進めず、時刻だけ進む）
+    let processed = r.processed;
+    k.update(at + 300, &s, &[]);
+    assert_eq!(k.result(&s, None).processed, processed);
+    assert_eq!(k.timer(2), Some(300));
+    assert!(!k.scene_over());
+    k.update(at + 501, &s, &[]);
+    assert!(k.scene_over());
+    // 閉じ始めた後は何もしない
+    let mut again = k;
+    again.quit(&input, total);
+    assert_eq!(again.timer(2), Some(501));
+    let _ = &mut s;
 }
