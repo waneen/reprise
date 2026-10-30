@@ -420,7 +420,8 @@ mod tests {
                         (s.level, s.difficulty, s.hash.md5[0]),
                         (3, 4, s.title.as_bytes()[0])
                     );
-                    s.path.to_string_lossy().into_owned()
+                    // Windows では join した部分が \ 区切りになる
+                    s.path.to_string_lossy().replace('\\', "/")
                 }
             })
             .collect();
