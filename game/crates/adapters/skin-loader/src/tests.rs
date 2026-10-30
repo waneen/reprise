@@ -55,6 +55,7 @@ fn adp_sk_01_scene_kind(#[case] kind: i32, #[case] expected: d::SceneKind) {
 #[case::slider("SLIDER", 0, sc::ElementKind::Slider { direction: 2, range: 100, value: sc::ValueRef(1), disabled: false }, d::ElementKind::Slider { value_ref: 1, direction: 2, range: 100 })]
 #[case::bargraph("BARGRAPH", 0, sc::ElementKind::Bargraph { value: sc::ValueRef(5), direction: 1 }, d::ElementKind::Bar { value_ref: 5, direction: 1 })]
 #[case::button("BUTTON", 0, sc::ElementKind::Button { action: 7, click: 0, panel: 0, plus_only: false }, d::ElementKind::Button { action: 7 })]
+#[case::bar_title("BAR_TITLE", 1, sc::ElementKind::Text { font: sc::FontRef(2), value: sc::ValueRef(0), align: 1, editable: false }, d::ElementKind::BarTitle { index: 1, font: 2, align: 1 })]
 #[case::note("NOTE", 3, sc::ElementKind::Other, d::ElementKind::NoteLane { lane: 3 })]
 #[case::other("JUDGELINE", 0, sc::ElementKind::Other, d::ElementKind::Other { command: "JUDGELINE".into(), index: 0 })]
 fn adp_sk_02_element_kind(
@@ -305,4 +306,25 @@ fn adp_sk_07_no_match_is_none(tree: TempDir, #[case] pattern: &str) {
         rng: &mut rng,
     };
     assert_eq!(r.resolve(pattern), None);
+}
+
+/// ADP-SK-12: 曲バーの配置
+#[rstest]
+#[case::both(vec![("BAR_CENTER", vec!["7"]), ("BAR_AVAILABLE", vec!["2", "12"])], d::BarLayout { center: 7, available: (2, 12) })]
+#[case::center_out_of_range_ignored(vec![("BAR_CENTER", vec!["5"]), ("BAR_CENTER", vec!["30"])], d::BarLayout { center: 5, available: (0, 0) })]
+#[case::last_wins(vec![("BAR_CENTER", vec!["3"]), ("BAR_CENTER", vec!["4"])], d::BarLayout { center: 4, available: (0, 0) })]
+#[case::none(vec![], d::BarLayout::default())]
+fn adp_sk_12_bar_layout(
+    #[case] directives: Vec<(&str, Vec<&str>)>,
+    #[case] expected: d::BarLayout,
+) {
+    let mut dc = doc(5, vec![], vec![]);
+    dc.directives = directives
+        .into_iter()
+        .map(|(c, a)| sc::Directive {
+            command: c.into(),
+            args: a.into_iter().map(String::from).collect(),
+        })
+        .collect();
+    assert_eq!(map_skin(dc, None).bars, expected);
 }

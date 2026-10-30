@@ -4,7 +4,7 @@
 //! | ID | ルール |
 //! |---|---|
 //! | ADP-SK-01 | シーン種別: LR2 の種別番号 0..=15 を `SceneKind` に、それ以外は `Other` |
-//! | ADP-SK-02 | 要素種別: IMAGE/NUMBER/TEXT/SLIDER/BARGRAPH/BUTTON は対応する種別、NOTE は `NoteLane{lane=添字}`、それ以外は `Other{command,index}` |
+//! | ADP-SK-02 | 要素種別: IMAGE/NUMBER/TEXT/SLIDER/BARGRAPH/BUTTON は対応する種別、BAR_TITLE は `BarTitle{index=添字}`、NOTE は `NoteLane{lane=添字}`、それ以外は `Other{command,index}` |
 //! | ADP-SK-03 | 画像: 解決できたものは Some、`Continue`/`Missing` は None |
 //! | ADP-SK-04 | キーフレーム・条件・タイマー（未指定は 0）・合成・SRC の追加引数・DST の追加引数・描画順をそのまま写す |
 //! | ADP-SK-05 | `FsResolver`: パスは root 基準。完全一致が無ければ各階層を大小無視で探す（Windows 前提のスキンを他 OS で読むため） |
@@ -14,6 +14,7 @@
 //! | ADP-SK-09 | 抜き色: 最後の `#TRANSCOLOR,r,g,b`（LR2 が受け付ける綴り違い `TRANSCLOLR`/`TRANSCLOLOR` も）、無ければローダの既定 |
 //! | ADP-SK-10 | 場面の時間: `STARTINPUT`（beatoraja は `INPUT`）・`LOADSTART`・`LOADEND`・`PLAYSTART`・`FADEOUT`・`CLOSE`（`SKIP` も）の第 1 引数。後の行が勝ち、無ければ 0 |
 //! | ADP-SK-11 | フォント: `#FONT` はシステムフォント（それ以外の種類は None）。画像フォントの画像は `images` の後ろに足し、文字はその添字を指す。画像が無い文字は捨て、読めなかったフォントは None |
+//! | ADP-SK-12 | 曲バーの配置: `#BAR_CENTER,n` は 0..=29 のときだけ（OpenLR2 の範囲の確かめ）、`#BAR_AVAILABLE,a,b` はそのまま。後の行が勝ち、無ければ 0 |
 use application::ports::{FileSystem, PortError, SkinLoader};
 use domain::{random::LegacyMt, skin as d};
 use reprise_skin_core as sc;
@@ -142,6 +143,13 @@ fn element_kind(e: &sc::Element) -> d::ElementKind {
             digits: *digits,
             align: *align,
         },
+        sc::ElementKind::Text { font, align, .. } if e.command == "BAR_TITLE" => {
+            d::ElementKind::BarTitle {
+                index: e.index,
+                font: font.0,
+                align: *align,
+            }
+        }
         sc::ElementKind::Text {
             font, value, align, ..
         } => d::ElementKind::Text {
@@ -208,15 +216,20 @@ pub fn map_skin(doc: sc::SkinDocument, default_color_key: Option<[u8; 3]>) -> d:
             [v(0), v(1), v(2)]
         })
         .or(default_color_key);
-    // ADP-SK-10: 場面の時間（後の行が勝つ）
+    // ADP-SK-10: 場面の時間（後の行が勝つ）、ADP-SK-12: 曲バーの配置
     let mut timing = d::SceneTiming::default();
+    let mut bars = d::BarLayout::default();
     for dir in &doc.directives {
-        let v = dir
-            .args
-            .first()
-            .and_then(|s| s.trim().parse::<i32>().ok())
-            .unwrap_or(0);
+        let arg = |i: usize| {
+            dir.args
+                .get(i)
+                .and_then(|s| s.trim().parse::<i32>().ok())
+                .unwrap_or(0)
+        };
+        let v = arg(0);
         match dir.command.as_str() {
+            "BAR_CENTER" if (0..=29).contains(&v) => bars.center = v,
+            "BAR_AVAILABLE" => bars.available = (v, arg(1)),
             "STARTINPUT" | "INPUT" => timing.start_input = v,
             "LOADSTART" => timing.load_start = v,
             "LOADEND" => timing.load_end = v,
@@ -284,6 +297,7 @@ pub fn map_skin(doc: sc::SkinDocument, default_color_key: Option<[u8; 3]>) -> d:
         })
         .collect();
     d::Skin {
+        bars,
         timing,
         color_key,
         fonts,
