@@ -52,6 +52,7 @@ fn res() -> PlayResult {
         processed: 7,
         combo: 1,
         max_combo: 3,
+        mines: 0,
         hp: 47.0,
         lamp: ClearLamp::Failed,
         graph: vec![0; 1000],
@@ -222,6 +223,8 @@ fn app_res_05_options(#[case] r: PlayResult, #[case] want: Vec<(i32, bool)>) {
 #[case::five_keys({ let mut r = res(); r.key_mode = KeyMode::K5; r }, vec![(100, Some(67850))])]
 #[case::no_record({ let mut r = res(); r.saved = None; r }, vec![(170, Some(0)), (172, Some(9)), (173, Some(0)), (176, Some(0)), (178, Some(1)), (183, Some(0))])]
 #[case::unprocessed_bp({ let mut r = res(); r.processed = 5; r }, vec![(177, Some(3)), (102, Some(90))])]
+// POOR（空POOR・地雷を含む LR2 の judgecount[1]）は BP に数え、114 は地雷をもう 1 度足す
+#[case::poor_and_mines({ let mut r = res(); r.counts.poor = 3; r.mines = 1; r }, vec![(114, Some(4)), (177, Some(4))])]
 #[case::no_notes({ let mut r = res(); r.total = 0; r.processed = 0; r.counts = JudgeCounts::default(); r }, vec![(100, None), (102, None), (115, None), (116, None), (183, Some(0)), (184, Some(0))])]
 fn app_res_06_numbers(#[case] r: PlayResult, #[case] want: Vec<(i32, Option<i64>)>) {
     let s = ResultSkin::new(timing(0, 0, 0, 0), &[], (0, 0), r);
@@ -237,6 +240,7 @@ fn app_res_06_numbers(#[case] r: PlayResult, #[case] want: Vec<(i32, Option<i64>
 #[case::projected_capped({ let mut r = res(); r.processed = 3; r }, vec![(11, 1.0)])]
 #[case::low_score_five_keys({ let mut r = res(); r.key_mode = KeyMode::K5; r.counts = JudgeCounts { good: 1, ..Default::default() }; r }, vec![(26, 7142.0 / 10000.0)])]
 #[case::no_notes({ let mut r = res(); r.total = 0; r.processed = 0; r }, vec![(10, 0.0), (11, 0.0), (20, 0.0), (26, 0.0)])]
+#[case::poor_without_mine_bonus({ let mut r = res(); r.counts.poor = 2; r.mines = 1; r }, vec![(24, 2.0 / 7.0)])]
 fn app_res_07_bargraph(#[case] r: PlayResult, #[case] want: Vec<(i32, f64)>) {
     let s = ResultSkin::new(timing(0, 0, 0, 0), &[], (0, 0), r);
     for (id, w) in want {

@@ -30,7 +30,9 @@ pub struct PlayResult {
     pub processed: u32,
     pub combo: u32,
     pub max_combo: u32,
-    /// 終わりの HP
+    /// 踏んだ地雷の数（LR2 の `judgecount[0]`）
+    pub mines: u32,
+    /// 終わりの HP（片付いていないノーツがあれば 0）
     pub hp: f64,
     pub lamp: ClearLamp,
     /// ゲージグラフの区間ごとの HP（`domain::play::GaugeGraph`）
@@ -44,7 +46,7 @@ impl PlayResult {
     fn ex(&self) -> i64 {
         self.counts.ex_score() as i64
     }
-    /// このプレイの BP（記録の最小 BP と同じ数え方: BD + POOR + 片付いていないノーツ）
+    /// このプレイの BP（LR2 の数値 177 と同じ: BD + POOR + 片付いていないノーツ。POOR は LR2 の `judgecount[1]` と同じく空POOR・地雷を含む）
     fn bp(&self) -> i64 {
         self.counts.bad as i64 + self.counts.poor as i64 + self.total as i64 - self.processed as i64
     }
@@ -334,7 +336,8 @@ impl SkinState for ResultSkin {
             111 => c.great as i64,
             112 => c.good as i64,
             113 => c.bad as i64,
-            114 => c.poor as i64,
+            // LR2 は judgecount[0] + judgecount[1]（地雷は両方に数える）
+            114 => c.poor as i64 + r.mines as i64,
             115 | 116 if total == 0 => return None,
             115 => ex * 100 / (total * 2),
             116 => ex * 10000 / (total * 2) % 100,
