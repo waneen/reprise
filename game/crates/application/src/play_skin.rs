@@ -2,9 +2,9 @@
 //! LR2 の番号のタイマー・条件・数値を作り、`domain::skin::lr2::SkinState` として渡す。
 //! 番号の意味は OpenLR2 の `LR2_skinobject.cpp`・`Scene04_Play.cpp`・`LR2_gameloop.cpp` を仕様として参照した。
 use crate::play::PlaySession;
-use domain::chart::{Chart, KeyMode, NoteKind, SoundId, TimingEvent};
+use domain::chart::{BgaLayer, Chart, ImageId, KeyMode, NoteKind, SoundId, TimingEvent};
 use domain::play::{GaugeType, Judge, KeyState, PlayEvent};
-use domain::skin::lr2::{NoteView, PlayView, SkinState};
+use domain::skin::lr2::{BgaView, NoteView, PlayView, SkinState};
 use domain::skin::SceneTiming;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -19,6 +19,9 @@ pub fn judge_index(j: Judge) -> usize {
         Judge::EmptyPoor => 0,
     }
 }
+
+/// BD 以下の判定から POOR 層を出す時間（LR2 の設定 `poorbga` の既定）
+const POOR_BGA_MS: i64 = 500;
 
 /// 値を時間をかけて追いかける表示（LR2 の `HP_print`・`score_print`）
 #[derive(Debug, Clone, Copy)]
@@ -97,11 +100,19 @@ pub struct PlaySkin {
     processed: i64,
     /// 文字列（APP-SKN-10）
     texts: BTreeMap<i32, String>,
+    /// BGA の切り替え（時刻順。APP-SKN-11）と次に見るもの
+    bga_events: Vec<(i64, BgaLayer, ImageId)>,
+    bga_next: usize,
+    /// 読めた BGA 画像と描画側の番号
+    bga_images: BTreeMap<ImageId, u32>,
+    /// 1 層目・2 層目・POOR 層
+    bga: [Option<ImageId>; 3],
 }
 
 impl PlaySkin {
     /// `skin_options` はスキンの読み込みで真になった条件（スキン設定の選択など）
-    /// `timing` はスキンの場面の時間、`sound_ms` は音の長さ（曲の長さに使う）
+    /// `timing` はスキンの場面の時間、`sound_ms` は音の長さ（曲の長さに使う）、
+    /// `bga_images` は読めた BGA 画像と描画側の番号（[`BgaView::image`] になる）
     pub fn new(
         chart: &Chart,
         session: &PlaySession,
@@ -109,6 +120,7 @@ impl PlaySkin {
         timing: SceneTiming,
         skin_options: &[i32],
         sound_ms: &BTreeMap<SoundId, i64>,
+        bga_images: &BTreeMap<ImageId, u32>,
     ) -> Self {
         let lead_in_ms = (timing.load_start + timing.load_end + timing.play_start).max(0) as i64;
         let survival = !matches!(gauge, GaugeType::Groove | GaugeType::Easy);
@@ -119,7 +131,7 @@ impl PlaySkin {
         let mut fixed: BTreeSet<i32> = skin_options.iter().copied().collect();
         fixed.extend([
             32, // オートプレイでない
-            40, // BGA を描かない
+            41, // BGA を描く
             if survival { 43 } else { 42 },
             81, // 読み込み済み
             if chart.bga.is_empty() { 170 } else { 171 },
@@ -187,9 +199,21 @@ impl PlaySkin {
         .into_iter()
         .filter(|(_, s)| !s.is_empty())
         .collect();
+        // BGA（APP-SKN-11）: POOR 層の初期値は 0 番の画像（読めていれば）
+        let mut bga_events: Vec<(i64, BgaLayer, ImageId)> = chart
+            .bga
+            .iter()
+            .map(|(b, l, i)| (tm.time_of(*b) / 1000, *l, *i))
+            .collect();
+        bga_events.sort_by_key(|e| e.0);
+        let poor = bga_images.contains_key(&ImageId(0)).then_some(ImageId(0));
         let hp = session.play().gauge();
         let mut s = Self {
             texts,
+            bga_events,
+            bga_next: 0,
+            bga_images: bga_images.clone(),
+            bga: [None, None, poor],
             lead_in_ms,
             timing,
             scratch: 0,
@@ -284,6 +308,19 @@ impl PlaySkin {
                 PlayEvent::Mine { .. } => self.set(46),
                 _ => {}
             }
+        }
+        // BGA の切り替え（APP-SKN-11）
+        while let Some(&(t, layer, image)) = self.bga_events.get(self.bga_next) {
+            if t > t_ms {
+                break;
+            }
+            let i = match layer {
+                BgaLayer::Base => 0,
+                BgaLayer::Layer => 1,
+                BgaLayer::Poor => 2,
+            };
+            self.bga[i] = Some(image);
+            self.bga_next += 1;
         }
         // キー（APP-SKN-03）
         for (lane, k) in session.keys() {
@@ -447,7 +484,31 @@ impl PlaySkin {
             tremble,
             hi_speed,
             notes,
+            bga: self.bga_view(),
         }
+    }
+
+    /// 描く BGA の層（APP-SKN-11）。BD 以下の判定から 500ms 未満は POOR 層だけ（後ろの黒なし）、
+    /// それ以外は 1 層目（後ろに黒）と 2 層目。読めていない画像は描かない
+    fn bga_view(&self) -> Vec<BgaView> {
+        let [base, layer, poor] = self.bga;
+        let poor_time = self.last_miss.is_some_and(|m| self.now - m < POOR_BGA_MS);
+        let layers = match (poor_time, poor) {
+            (true, Some(p)) => vec![(p, false)],
+            _ => vec![(base, true), (layer, false)]
+                .into_iter()
+                .filter_map(|(i, b)| Some((i?, b)))
+                .collect(),
+        };
+        layers
+            .into_iter()
+            .filter_map(|(i, backbox)| {
+                Some(BgaView {
+                    image: *self.bga_images.get(&i)?,
+                    backbox,
+                })
+            })
+            .collect()
     }
 }
 

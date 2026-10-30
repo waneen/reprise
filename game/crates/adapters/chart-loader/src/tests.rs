@@ -233,3 +233,28 @@ fn adp_ch_09_find_sound_file(
     let got = find_sound_file(&tmp.path().join("song"), name);
     assert_eq!(got, want.map(|w| tmp.path().join(w)));
 }
+
+/// ADP-CH-10: 画像ファイルの解決（書かれた名前 → 末尾 3 文字を png/jpg/bmp に → 1 つ上のフォルダで同じ順、大小無視）
+#[rstest]
+#[case::exact(&["song/a.bmp"], "a.bmp", Some("song/a.bmp"))]
+#[case::case_insensitive(&["song/A.BMP"], "a.bmp", Some("song/A.BMP"))]
+#[case::bmp_to_png(&["song/a.png"], "a.bmp", Some("song/a.png"))]
+#[case::png_before_jpg(&["song/a.jpg", "song/a.png"], "a.bmp", Some("song/a.png"))]
+#[case::skips_own_extension(&["song/a.jpg"], "a.png", Some("song/a.jpg"))]
+#[case::parent_alternative(&["a.png"], "a.bmp", Some("a.png"))]
+#[case::missing(&["song/b.bmp"], "a.bmp", None)]
+fn adp_ch_10_find_image_file(
+    #[case] files: &[&str],
+    #[case] name: &str,
+    #[case] want: Option<&str>,
+) {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("song")).unwrap();
+    for f in files {
+        let p = tmp.path().join(f);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, b"x").unwrap();
+    }
+    let got = find_image_file(&tmp.path().join("song"), name);
+    assert_eq!(got, want.map(|w| tmp.path().join(w)));
+}
