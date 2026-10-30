@@ -23,6 +23,23 @@ pub struct Skin {
     pub options: Vec<i32>,
     /// 抜き色（アルファの無い画像でこの色を透明にする）
     pub color_key: Option<[u8; 3]>,
+    pub timing: SceneTiming,
+}
+
+/// 場面の時間（ms、場面の開始から）。LR2 の `#STARTINPUT` `#LOADSTART` `#LOADEND` `#PLAYSTART` `#FADEOUT` `#CLOSE`
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SceneTiming {
+    /// これを過ぎると入力を受け付ける（タイマー 1）
+    pub start_input: i32,
+    pub load_start: i32,
+    /// 読み込み開始 + これ でタイマー 40（準備完了）
+    pub load_end: i32,
+    /// タイマー 40 から これ でタイマー 41（プレイ開始）
+    pub play_start: i32,
+    /// 曲が終わってから（タイマー 2）場面を閉じるまで
+    pub fade_out: i32,
+    /// 途中終了から（タイマー 3）場面を閉じるまで
+    pub close: i32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -175,6 +175,24 @@ fn adp_sk_09_color_key(
     assert_eq!(map_skin(dc, default).color_key, expected);
 }
 
+/// ADP-SK-10: 場面の時間
+#[rstest]
+#[case::lr2(vec![("STARTINPUT", "500"), ("LOADSTART", "100"), ("LOADEND", "1500"), ("PLAYSTART", "1000"), ("FADEOUT", "2000"), ("CLOSE", "1200")], d::SceneTiming { start_input: 500, load_start: 100, load_end: 1500, play_start: 1000, fade_out: 2000, close: 1200 })]
+#[case::beatoraja_input_and_skip(vec![("INPUT", "300"), ("SKIP", "800")], d::SceneTiming { start_input: 300, close: 800, ..Default::default() })]
+#[case::last_wins(vec![("FADEOUT", "100"), ("FADEOUT", "200")], d::SceneTiming { fade_out: 200, ..Default::default() })]
+#[case::none(vec![], d::SceneTiming::default())]
+fn adp_sk_10_scene_timing(#[case] directives: Vec<(&str, &str)>, #[case] expected: d::SceneTiming) {
+    let mut dc = doc(0, vec![], vec![]);
+    dc.directives = directives
+        .into_iter()
+        .map(|(c, a)| sc::Directive {
+            command: c.into(),
+            args: vec![a.into()],
+        })
+        .collect();
+    assert_eq!(map_skin(dc, None).timing, expected);
+}
+
 // ---- FsResolver ----
 
 #[fixture]
