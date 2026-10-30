@@ -1,12 +1,14 @@
-//! ネイティブとブラウザで違うところ（起動引数・ファイル・記録の保存先・乱数の種）。
+//! ネイティブとブラウザで違うところ（起動引数・ファイル・記録と設定の保存先・乱数の種）。
 //! ブラウザ版は、ページの JavaScript が選ばれたファイルを `globalThis.repriseFiles`（パス → `Uint8Array` の `Map`）に、
 //! 起動引数を `globalThis.repriseArgs`（文字列の配列）に置いてから起動する（`web/index.html`）。
-use application::ports::{FileSystem, ScoreRepository};
+use application::ports::{FileSystem, ScoreRepository, SettingsStore};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// 記録の保存先（sqlite の接続は Sync でないので呼び出し側で Mutex に入れる）
 pub type Scores = Box<dyn ScoreRepository + Send>;
+/// 設定の保存先
+pub type Store = Box<dyn SettingsStore + Send + Sync>;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod imp {
@@ -30,6 +32,12 @@ mod imp {
                 None
             }
         }
+    }
+    /// 設定は記録と同じフォルダの config.json
+    pub fn settings_store(data_dir: &Path) -> Option<Store> {
+        Some(Box::new(settings_json::JsonSettingsFile {
+            path: data_dir.join("config.json"),
+        }))
     }
     pub fn seed() -> u32 {
         std::time::SystemTime::now()
@@ -86,6 +94,10 @@ mod imp {
     }
     /// ブラウザ版は記録を保存しない
     pub fn open_scores(_data_dir: &Path) -> Option<Scores> {
+        None
+    }
+    /// ブラウザ版は設定を保存しない
+    pub fn settings_store(_data_dir: &Path) -> Option<Store> {
         None
     }
     pub fn seed() -> u32 {

@@ -36,6 +36,7 @@ image = { version = "0.25", default-features = false, features = ["png", "bmp", 
 score-import-lr2 = { path = "../adapters/score-import-lr2" }
 score-import-beatoraja = { path = "../adapters/score-import-beatoraja" }
 score-db = { path = "../adapters/score-db" }
+settings-json = { path = "../adapters/settings-json" }
 # TEXT のシステムフォント（OS のフォントから探す）
 bevy = { version = "0.19.1", default-features = false, features = ["system_font_discovery"] }
 
