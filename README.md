@@ -15,11 +15,13 @@ Lunatic Rave 2 (LR2) のプレイ感の再現を目指す、Rust製のクロス�
 
 ## ビルドと実行
 ```sh
-cd game && cargo run -p reprise --release -- path/to/chart.bms [--gauge groove|easy|hard|death|pattack|gattack] [--skin path/to/play.csv [--skin-root path/to/LR2]]
+cd game && cargo run -p reprise --release -- path/to/chart.bms [--gauge groove|easy|hard|death|pattack|gattack] [--skin path/to/play.csv [--skin-root path/to/LR2]] [--hs 100] [--hsfix off|max|min|avg|const|main] [--cover 0..100] [--offset ms] [--auto]
 ```
-1P の 7 鍵（5 鍵）のプレイ画面です。`--skin` に LR2 のプレイスキン（.lr2skin / .csv）を渡すとそれで描き、無ければ四角形だけで描きます。`--skin-root` はスキン中のパスの基準（LR2 本体のフォルダ。既定は今のフォルダ）。キーは皿 = 左 Shift / 左 Ctrl、鍵盤 1〜7 = Z S X D C F V、Esc で終了。
+1P の 7 鍵（5 鍵）のプレイ画面です。`--skin` に LR2 のプレイスキン（.lr2skin / .csv）を渡すとそれで描き、無ければ四角形だけで描きます。`--skin-root` はスキン中のパスの基準（LR2 本体のフォルダ。既定は今のフォルダ）。キーは皿 = 左 Shift / 左 Ctrl、鍵盤 1〜7 = Z S X D C F V、START = Q、SELECT = W、Esc で終了。
 
-スキン描画は画像・数字・ゲージ・判定とコンボ・ノーツ（LN・地雷）・小節線・BARGRAPH・SLIDER・皿の回転・合成モード（加算・減算・乗算など）・フィルタ・場面の時間（`#STARTINPUT`・`#FADEOUT` など）・文字列（画像フォント `.lr2font` と OS のフォント）・BGA（画像。1 層目・2 層目・POOR 層）に対応し、曲が終わるか途中終了すると結果を文字で出します。BGA の動画・2P 側・レーンカバーなどは描きません（[ARCHITECTURE.md](ARCHITECTURE.md#lr2-互換の根拠)）。
+プレイオプション（スキンで描くときに効きます）: `--hs` はハイスピード ×100（LR2 の既定 100）、`--hsfix` は HS-FIX、`--cover` はレーンカバー（量 0〜100）、`--offset` は判定タイミング（ms。ノーツの見た目をずらす）、`--auto` はオートプレイ。プレイ中は START か SELECT を押しながら 鍵盤 1/3/5 でハイスピード −0.1・2/4 で +0.1、6/7 でレーンカバーの上げ下げ（レーンカバーが無ければハイスピード）、START か SELECT の 2 度押しでレーンカバーの表示を切り替え、マウスホイールでレーンカバーを動かせます。
+
+スキン描画は画像・数字・ゲージ・判定とコンボ・ノーツ（LN・地雷）・小節線・BARGRAPH・SLIDER・皿の回転・合成モード（加算・減算・乗算など）・フィルタ・場面の時間（`#STARTINPUT`・`#FADEOUT` など）・文字列（画像フォント `.lr2font` と OS のフォント）・BGA（画像。1 層目・2 層目・POOR 層）に対応し、曲が終わるか途中終了すると結果を文字で出します。BGA の動画・2P 側・EFFECT の HIDDEN/SUDDEN などは描きません（[ARCHITECTURE.md](ARCHITECTURE.md#lr2-互換の根拠)）。
 
 Linux では Bevy のために `libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev` が必要です。
 

@@ -2,9 +2,11 @@
 //! LR2 の番号のタイマー・条件・数値を作り、`domain::skin::lr2::SkinState` として渡す。
 //! 番号の意味は OpenLR2 の `LR2_skinobject.cpp`・`Scene04_Play.cpp`・`LR2_gameloop.cpp` を仕様として参照した。
 use crate::play::PlaySession;
-use domain::chart::{BgaLayer, Chart, ImageId, KeyMode, NoteKind, SoundId, TimingEvent};
+use crate::play_options::{ControlInput, OptionState, PlayOptions};
+use domain::chart::{Beat, BgaLayer, Chart, ImageId, KeyMode, NoteKind, SoundId, TimingEvent};
+use domain::play::scroll::{position_at, position_of, speed_multiplier, UNITS_PER_BEAT};
 use domain::play::{GaugeType, Judge, KeyState, PlayEvent};
-use domain::skin::lr2::{BgaView, NoteView, PlayView, SkinState};
+use domain::skin::lr2::{pixels_per_beat, BgaView, NoteView, PlayView, SkinState};
 use domain::skin::SceneTiming;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -107,12 +109,17 @@ pub struct PlaySkin {
     bga_images: BTreeMap<ImageId, u32>,
     /// 1 層目・2 層目・POOR 層
     bga: [Option<ImageId>; 3],
+    /// プレイオプション（プレイ中に変わる）
+    opts: OptionState,
+    /// HS-FIX の倍率
+    hs_mult: f64,
 }
 
 impl PlaySkin {
     /// `skin_options` はスキンの読み込みで真になった条件（スキン設定の選択など）
     /// `timing` はスキンの場面の時間、`sound_ms` は音の長さ（曲の長さに使う）、
-    /// `bga_images` は読めた BGA 画像と描画側の番号（[`BgaView::image`] になる）
+    /// `bga_images` は読めた BGA 画像と描画側の番号（[`BgaView::image`] になる）、`options` はプレイオプション
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         chart: &Chart,
         session: &PlaySession,
@@ -121,6 +128,7 @@ impl PlaySkin {
         skin_options: &[i32],
         sound_ms: &BTreeMap<SoundId, i64>,
         bga_images: &BTreeMap<ImageId, u32>,
+        options: PlayOptions,
     ) -> Self {
         let lead_in_ms = (timing.load_start + timing.load_end + timing.play_start).max(0) as i64;
         let survival = !matches!(gauge, GaugeType::Groove | GaugeType::Easy);
@@ -130,7 +138,6 @@ impl PlaySkin {
             .any(|n| matches!(n.kind, NoteKind::Long { .. }));
         let mut fixed: BTreeSet<i32> = skin_options.iter().copied().collect();
         fixed.extend([
-            32, // オートプレイでない
             41, // BGA を描く
             if survival { 43 } else { 42 },
             81, // 読み込み済み
@@ -208,7 +215,10 @@ impl PlaySkin {
         bga_events.sort_by_key(|e| e.0);
         let poor = bga_images.contains_key(&ImageId(0)).then_some(ImageId(0));
         let hp = session.play().gauge();
+        let hs_mult = speed_multiplier(chart, tm, options.hs_fix);
         let mut s = Self {
+            opts: OptionState::new(options),
+            hs_mult,
             texts,
             bga_events,
             bga_next: 0,
@@ -247,6 +257,16 @@ impl PlaySkin {
         self.lead_in_ms
     }
 
+    /// プレイオプション（プレイ中の変更を含む）
+    pub fn options(&self) -> &PlayOptions {
+        &self.opts.options
+    }
+
+    /// プレイ中の操作（APP-OPT-01, 02）。`update` の後に呼ぶ
+    pub fn control(&mut self, input: &ControlInput) {
+        self.opts.control(self.now, input);
+    }
+
     /// 皿を回している向き（−1 = 上、0 = なし、1 = 下）。次の `update` から角度に効く
     pub fn set_scratch(&mut self, dir: i32) {
         self.scratch = dir.signum();
@@ -269,6 +289,13 @@ impl PlaySkin {
     }
     fn reset(&mut self, timer: i32) {
         self.starts.remove(&timer);
+    }
+    /// 鍵盤を押していなければ押す（タイマー 100+レーン を始めて 120+レーン を止める）
+    fn press_once(&mut self, lane: i32) {
+        if !self.starts.contains_key(&(100 + lane)) {
+            self.set(100 + lane);
+            self.reset(120 + lane);
+        }
     }
 
     /// 1 フレーム進める。`events` はそのフレームの `PlaySession::frame` の結果
@@ -302,6 +329,10 @@ impl PlaySkin {
                     }
                     if j >= 4 && lane.0 < 10 {
                         self.set(50 + lane.0 as i32);
+                    }
+                    // オートは判定で鍵盤を押す（APP-SKN-12）
+                    if self.opts.options.auto && judge != Judge::EmptyPoor {
+                        self.press_once(lane.0 as i32);
                     }
                     self.set(46);
                 }
@@ -345,10 +376,22 @@ impl PlaySkin {
             .map(|n| n.lane.0)
             .collect();
         for l in 0..10u8 {
-            if held.contains(&l) {
-                self.set_once(70 + l as i32);
+            let l = l as i32;
+            if held.contains(&(l as u8)) {
+                if self.opts.options.auto && !self.starts.contains_key(&(70 + l)) {
+                    // オートは LN の間 鍵盤を押し続ける（APP-SKN-12）
+                    self.reset(50 + l);
+                    self.press_once(l);
+                }
+                self.set_once(70 + l);
             } else {
-                self.reset(70 + l as i32);
+                self.reset(70 + l);
+            }
+            // オートは判定から 80ms で鍵盤を離す（APP-SKN-12）
+            let after_judge = self.timer(50 + l).is_some_and(|t| t >= 80);
+            if self.opts.options.auto && after_judge && self.timer(100 + l).is_some_and(|t| t > 0) {
+                self.reset(100 + l);
+                self.set(120 + l);
             }
         }
         // ゲージ（APP-SKN-04）
@@ -427,6 +470,11 @@ impl PlaySkin {
         n.insert(113, c.bad as i64);
         n.insert(114, c.poor as i64);
         n.insert(160, session.timing().bpm_at(t_ms * 1000) as i64);
+        // オプション（APP-OPT-04）: ハイスピード・判定タイミング・レーンカバー
+        let o = self.opts.options;
+        n.insert(10, o.hi_speed as i64);
+        n.insert(12, o.judge_offset as i64);
+        n.insert(14, o.cover as i64);
         if t_ms >= 1000 {
             n.insert(161, t_ms / 1000 / 60);
             n.insert(162, t_ms / 1000 % 60);
@@ -450,30 +498,36 @@ impl PlaySkin {
         (self.now as f64 / self.runtime_ms as f64).min(1.0)
     }
 
-    /// 描画材料（APP-SKN-06）。`visible_beats` 拍先まで、`tremble` はゲージのちらつき用の乱数（0..=2）
-    pub fn view(
-        &self,
-        session: &PlaySession,
-        hi_speed: f64,
-        visible_beats: f64,
-        tremble: i32,
-    ) -> PlayView {
+    /// 描画材料（APP-SKN-06, APP-OPT-03）。`visible_px` ピクセル先まで、`tremble` はゲージのちらつき用の乱数（0..=2）。
+    /// ハイスピードは 設定 × HS-FIX の倍率、ノーツと小節線は (位置 − 今の位置) / 480（今 = 時刻 + 判定タイミング）
+    pub fn view(&self, session: &PlaySession, visible_px: f64, tremble: i32) -> PlayView {
+        let o = self.opts.options;
+        let hi_speed = o.hi_speed as f64 * self.hs_mult;
+        let visible = visible_px / pixels_per_beat(hi_speed);
+        let tm = session.timing();
+        let now = position_at(tm, o.hs_fix, (self.now + o.judge_offset as i64) * 1000);
+        let dist = |b: Beat| (position_of(tm, o.hs_fix, b) - now) / UNITS_PER_BEAT;
         let notes = session
-            .visible_notes(self.now, visible_beats)
+            .play()
+            .pending_notes()
             .into_iter()
-            .map(|v| NoteView {
-                lane: v.lane.0 as i32,
-                head: v.y * visible_beats,
-                tail: v.y_end.map(|y| y * visible_beats),
-                mine: v.mine,
-                held: v.held,
+            .filter(|n| dist(n.beat) <= visible)
+            .map(|n| {
+                let head = dist(n.beat);
+                NoteView {
+                    lane: n.lane.0 as i32,
+                    head: if n.held { head.max(0.0) } else { head },
+                    tail: n.end_beat.map(dist),
+                    mine: n.mine,
+                    held: n.held,
+                }
             })
             .collect();
         let lines = self
             .measures
             .iter()
-            .map(|m| m - self.beat)
-            .filter(|b| (0.0..=visible_beats).contains(b))
+            .map(|m| dist(Beat(*m)))
+            .filter(|b| (0.0..=visible).contains(b))
             .collect();
         PlayView {
             lines,
@@ -530,7 +584,12 @@ impl SkinState for PlaySkin {
         if self.fixed.contains(&id) {
             return true;
         }
+        let auto = self.opts.options.auto;
         match id {
+            // オプション（APP-OPT-04）: 32 オートでない、33 オート、270 START/SELECT を押しながらでレーンカバーが効いている
+            32 => !auto,
+            33 => auto,
+            270 => self.opts.holding && self.opts.cover_active(),
             230..=239 => {
                 let lo = (id - 230) as f64 * 10.0;
                 self.hp >= lo && self.hp < lo + 10.0
@@ -555,7 +614,11 @@ impl SkinState for PlaySkin {
     }
 
     fn slider(&self, kind: i32) -> f64 {
+        let o = &self.opts;
         match kind {
+            // ハイスピード（10..=990 の範囲）・レーンカバー（APP-OPT-04）
+            2 => (o.options.hi_speed - 10) as f64 / 980.0,
+            4 if o.cover_active() => o.options.cover as f64 / 100.0,
             6 => self.progress(),
             _ => 0.0,
         }
