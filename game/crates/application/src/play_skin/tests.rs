@@ -61,6 +61,8 @@ const TIMING: SceneTiming = SceneTiming {
     play_start: 1000,
     fade_out: 500,
     close: 300,
+    start_input_rank: 0,
+    start_input_update: 0,
 };
 
 /// フレーム（時刻, 物理キーの変化）を順に進める。キー 0 → 皿、1 → レーン 1、2 → レーン 2
@@ -472,4 +474,35 @@ fn app_skn_12_auto_keys(#[case] frames: &[(i64, &[(KeyId, bool)])], #[case] prob
     };
     let (_, k) = run_opts(GaugeType::Groove, None, &BTreeMap::new(), o, frames);
     check(&k, &probes);
+}
+
+/// APP-SKN-13: リザルトの材料。ゲージグラフは譜面の時刻と曲の長さ（5000ms）で記録し（区間 = 時刻 / 5）、
+/// 途中終了か曲の終わりで残りを埋める（片付いていないノーツがあれば 0）。判定数・HP・文字列などはプレイの終わりの値
+#[rstest]
+#[case::song_end(GaugeType::Groove, 2500, 5001, 500, 3, 20)]
+#[case::dead(GaugeType::Hazard, 500, 1300, 100, 1, 100)]
+fn app_skn_13_result(
+    #[case] gauge: GaugeType,
+    #[case] mid: i64,
+    #[case] end: i64,
+    #[case] mid_slot: usize,
+    #[case] processed: u32,
+    #[case] initial: i32,
+) {
+    let (s_mid, _) = run(gauge, None, &[(0, NONE), (mid, NONE)]);
+    let hp_mid = s_mid.play().gauge() as i32;
+    let (s, k) = run(gauge, None, &[(0, NONE), (mid, NONE), (end, NONE)]);
+    let r = k.result(&s, None);
+    assert_eq!(r.graph.len(), 1000);
+    assert_eq!(r.graph[0], initial);
+    assert!(r.graph[1..=mid_slot].iter().all(|&v| v == hp_mid));
+    let dead = s.play().is_dead();
+    assert_eq!(dead, gauge == GaugeType::Hazard);
+    assert_eq!(r.graph[999], if dead { 0 } else { r.hp as i32 });
+    assert_eq!((r.total, r.processed), (3, processed));
+    assert_eq!(r.groove, gauge == GaugeType::Groove);
+    assert_eq!(r.lamp, s.play().clear_lamp());
+    assert_eq!(r.counts, s.play().counts());
+    assert_eq!(r.texts, k.texts);
+    assert_eq!(r.saved, None);
 }
