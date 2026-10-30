@@ -10,6 +10,7 @@
 //! | SJS-05 | 選曲スキンは `select_skin`（パス。null・無しは None） |
 //! | SJS-06 | キー設定スキンは `keyconfig_skin`（パス。null・無しは None） |
 //! | SJS-07 | 操作の割り当ては `keys` に操作の名前（2P は `p2_` を付ける）ごとの配列で、配列の位置が割り当ての位置（LR2 の 16 か所。空いた位置は null。16 番目より後は無視） |
+//! | SJS-08 | リザルトスキンは `result_skin`（パス。null・無しは None） |
 use application::ports::{PortError, SettingsStore};
 use application::settings::Settings;
 use domain::input::{Side, Source, PLACES, SLOTS};
@@ -121,6 +122,7 @@ pub fn to_json(s: &Settings) -> Value {
         "skin": s.skin,
         "select_skin": s.select_skin,
         "keyconfig_skin": s.keyconfig_skin,
+        "result_skin": s.result_skin,
         "skin_root": s.skin_root,
         "gauge": name_of(&GAUGES, s.gauge),
         "hi_speed": o.hi_speed,
@@ -153,6 +155,7 @@ pub fn from_json(v: &Value) -> Result<Settings, PortError> {
             "skin_root" if !v.is_null() => s.skin_root = Some(path(v)?),
             "select_skin" if !v.is_null() => s.select_skin = Some(path(v)?),
             "keyconfig_skin" if !v.is_null() => s.keyconfig_skin = Some(path(v)?),
+            "result_skin" if !v.is_null() => s.result_skin = Some(path(v)?),
             "gauge" => s.gauge = value_of(&GAUGES, v, "gauge")?,
             "hi_speed" => s.options.hi_speed = int(v, "hi_speed")?,
             "hs_fix" => s.options.hs_fix = value_of(&HS_FIX, v, "hs_fix")?,

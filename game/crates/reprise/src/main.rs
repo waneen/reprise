@@ -5,19 +5,22 @@
 //! 1P の 7 鍵（5 鍵）のプレイ画面。`--skin` で LR2 のプレイスキンで描き、無ければ四角形だけで描く。
 //! 選曲画面は `--select-skin` で LR2 の選曲スキンで描き、無ければ文字の一覧で描く。選曲スキンの BUTTON 13 で
 //! キー設定画面に入る（`config.json` の `keyconfig_skin` のキー設定スキンで描く。無ければ入らない）。
+//! 遊び終えると `config.json` の `result_skin` のリザルトスキンでリザルト画面を出す（無ければ結果を文字で出す）。
 //! `--skin-root` はスキン中のパスの基準（LR2 なら LR2 本体のフォルダ。既定は今のフォルダ）。
 //! 記録は `--data` のフォルダ（既定は今のフォルダの `reprise-data`）の `score.db` に、設定は `config.json` に保存する
 //! （起動引数で渡した設定も保存するので、次からは引数無しで選曲から始められる）。
 mod input;
 mod keyconfig_scene;
 mod platform;
+mod result_scene;
 mod select_scene;
 mod skin_render;
 
 use application::play::{KeyId, KeyInput, PlaySession, VisibleNote};
 use application::play_options::{ControlInput, PlayOptions};
-use application::play_skin::PlaySkin;
+use application::play_skin::{PlaySkin, QuitInput};
 use application::ports::{AudioOutput, ChartLoader, FileSystem, SkinLoader};
+use application::result_skin::{after_play, AfterPlay};
 use application::settings::Settings;
 use application::usecase::SavedScore;
 use bevy::audio::AudioSource;
@@ -77,7 +80,7 @@ fn chart_loaders() -> Vec<Box<dyn ChartLoader>> {
     ]
 }
 
-/// スキンの読み込み（描けるのは LR2 のプレイスキン・選曲スキン・キー設定スキン）
+/// スキンの読み込み（描けるのは LR2 のプレイスキン・選曲スキン・キー設定スキン・リザルトスキン）
 fn skin_loaders(fs: &Arc<dyn FileSystem>, root: PathBuf) -> Vec<Box<dyn SkinLoader>> {
     vec![
         Box::new(DecoderSkinLoader {
@@ -231,10 +234,10 @@ fn load_bga(fs: &dyn FileSystem, chart: &Chart, chart_path: &Path) -> Vec<(Image
         .collect()
 }
 
-/// 譜面と音を読み込む
-fn load(fs: &dyn FileSystem, path: &Path) -> Result<(Chart, Sounds), String> {
+/// 譜面と音を読み込む（`seed` は `#RANDOM` の乱数の種）
+fn load(fs: &dyn FileSystem, path: &Path, seed: u32) -> Result<(Chart, Sounds), String> {
     let bytes = fs.read(path).map_err(|e| format!("{e:?}"))?;
-    let (chart, _) = application::usecase::load_chart(&chart_loaders(), path, &bytes, seed())
+    let (chart, _) = application::usecase::load_chart(&chart_loaders(), path, &bytes, seed)
         .map_err(|e| format!("譜面を読めない: {e:?}"))?;
     let dir = path.parent().unwrap_or(Path::new("."));
     let mut sounds = vec![];
@@ -266,6 +269,8 @@ pub enum Scene {
     Play,
     /// キー設定（選曲スキンの BUTTON 13 から）
     KeyConfig,
+    /// リザルト（リザルトスキンがあるとき、プレイの後に）
+    Result,
 }
 
 /// 次に遊ぶ譜面
@@ -274,18 +279,20 @@ pub struct PlayRequest {
     pub path: PathBuf,
     /// 選曲でオートプレイを選んだ
     pub auto: bool,
+    /// `#RANDOM` の乱数の種（リザルトからもう一度遊ぶときは前と同じ。None なら新しく決める）
+    pub seed: Option<u32>,
 }
 
 /// 起動時に決めたこと（どのプレイにも使う）
 #[derive(Resource)]
-struct Boot {
+pub struct Boot {
     fs: Arc<dyn FileSystem>,
     gauge: GaugeType,
     options: PlayOptions,
     skin_path: Option<PathBuf>,
     skin_root: PathBuf,
     /// 譜面を直接渡して起動した（終わったら選曲に戻らずに終了する）
-    direct: bool,
+    pub direct: bool,
 }
 
 /// 記録の保存先（開けなければ・ブラウザ版は None。sqlite の接続は Sync でないので Mutex に入れる）
@@ -429,6 +436,12 @@ fn main() {
         }
         _ => None,
     };
+    // リザルトスキン（無い・読めなければ結果を文字で出す）
+    let result_skin = s.result_skin.as_ref().and_then(|p| {
+        load_skin(&boot.fs, p, boot.skin_root.clone(), &[SceneKind::Result])
+            .map_err(|e| eprintln!("リザルトスキンを読めないので結果を文字で出す: {e}"))
+            .ok()
+    });
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -477,6 +490,13 @@ fn main() {
             .chain()
             .run_if(in_state(Scene::KeyConfig)),
     )
+    .add_systems(OnEnter(Scene::Result), result_scene::enter)
+    .add_systems(
+        Update,
+        (result_scene::input, result_scene::draw).chain().run_if(
+            in_state(Scene::Result).and_then(resource_exists::<result_scene::ResultScreen>),
+        ),
+    )
     .add_systems(OnEnter(Scene::Play), enter_play)
     .add_systems(OnExit(Scene::Play), exit_play)
     .add_systems(
@@ -487,7 +507,16 @@ fn main() {
             (draw_notes, draw_hud)
                 .run_if(|g: Option<Res<Game>>| g.is_some_and(|g| g.skin.is_none())),
             draw_skin.run_if(|g: Option<Res<Game>>| g.is_some_and(|g| g.skin.is_some() && !g.over)),
-            show_result.run_if(|g: Option<Res<Game>>| g.is_some_and(|g| g.over)),
+            close_play.run_if(
+                |g: Option<Res<Game>>, r: Option<Res<result_scene::ResultScreen>>| {
+                    r.is_some() && g.is_some_and(|g| g.over)
+                },
+            ),
+            show_result.run_if(
+                |g: Option<Res<Game>>, r: Option<Res<result_scene::ResultScreen>>| {
+                    r.is_none() && g.is_some_and(|g| g.over)
+                },
+            ),
         )
             .chain()
             .run_if(in_state(Scene::Play).and_then(resource_exists::<Game>)),
@@ -501,8 +530,15 @@ fn main() {
     if let Some((skin, pixels)) = keyconfig_skin {
         app.insert_resource(keyconfig_scene::KeyConfigScreen::new(skin, pixels));
     }
+    if let Some((skin, pixels)) = result_skin {
+        app.insert_resource(result_scene::ResultScreen::new(skin, pixels));
+    }
     if let Some(path) = chart_path {
-        app.insert_resource(PlayRequest { path, auto: false });
+        app.insert_resource(PlayRequest {
+            path,
+            auto: false,
+            seed: None,
+        });
     }
     app.run();
 }
@@ -566,7 +602,8 @@ fn prepare_play(boot: &Boot, req: &PlayRequest) -> Result<Prepared, String> {
             )
         })
         .transpose()?;
-    let (chart, sounds) = load(fs.as_ref(), &req.path)?;
+    let chart_seed = req.seed.unwrap_or_else(seed);
+    let (chart, sounds) = load(fs.as_ref(), &req.path, chart_seed)?;
     let input = KeyInput::new(
         SLOT_LANES
             .iter()
@@ -616,10 +653,13 @@ fn prepare_play(boot: &Boot, req: &PlayRequest) -> Result<Prepared, String> {
         .as_ref()
         .map_or(LEAD_IN_MS, |sp| sp.play.lead_in_ms());
     let game = Game {
+        path: req.path.clone(),
+        seed: chart_seed,
         session,
         lead_in_ms,
         scratch: [false; 2],
         control: [false; 2],
+        mouse_right: 0,
         save_mode: options.save_mode(),
         saved: None,
         over: false,
@@ -643,6 +683,9 @@ struct SkinPlay {
 
 #[derive(Resource)]
 struct Game {
+    /// 遊んでいる譜面と `#RANDOM` の乱数の種（リザルトからもう一度遊ぶため）
+    path: PathBuf,
+    seed: u32,
     session: PlaySession,
     /// 画面の開始から譜面の先頭までの時間
     lead_in_ms: i64,
@@ -650,6 +693,8 @@ struct Game {
     scratch: [bool; 2],
     /// START・SELECT を押しているか
     control: [bool; 2],
+    /// LR2 のマウスの右ボタンの状態（途中終了に使う）
+    mouse_right: u8,
     /// 何を保存するか（None は保存しない）
     save_mode: Option<SaveMode>,
     /// 保存の結果（保存したら Some。保存しなかったら Some(None)）
@@ -760,13 +805,19 @@ impl AudioOutput for BevyAudio<'_, '_, '_> {
     }
 }
 
-/// Esc で選曲に戻る（譜面を直接渡して起動したなら終了）
+/// Esc で選曲に戻る（譜面を直接渡して起動したなら終了）。プレイスキンとリザルトスキンで遊んでいるときは
+/// LR2 と同じ途中終了（`play_frame`。`#FADEOUT` の後に場面を閉じる）にする
 fn leave_play(
     keys: Res<ButtonInput<KeyCode>>,
     boot: Res<Boot>,
+    game: Res<Game>,
+    result: Option<Res<result_scene::ResultScreen>>,
     mut next: ResMut<NextState<Scene>>,
     mut exit: MessageWriter<AppExit>,
 ) {
+    if result.is_some() && game.skin.is_some() {
+        return;
+    }
     if keys.just_pressed(KeyCode::Escape) {
         if boot.direct {
             exit.write(AppExit::Success);
@@ -777,9 +828,13 @@ fn leave_play(
 }
 
 /// 1 ループ = 1 フレーム。入力を読んで `PlaySession` を進める
+#[allow(clippy::too_many_arguments)]
 fn play_frame(
     mut commands: Commands,
     input: Res<input::SlotInput>,
+    keys: Res<ButtonInput<KeyCode>>,
+    buttons: Res<ButtonInput<MouseButton>>,
+    result: Option<Res<result_scene::ResultScreen>>,
     mut wheel: MessageReader<MouseWheel>,
     mut game: ResMut<Game>,
     mut scores: ResMut<ScoreDb>,
@@ -817,37 +872,100 @@ fn play_frame(
     }
     let t = game.now_ms();
     let game = &mut *game;
-    let mut audio = BevyAudio {
-        commands: &mut commands,
-        sounds: &game.sounds,
+    game.mouse_right =
+        result_scene::right_state(game.mouse_right, buttons.pressed(MouseButton::Right));
+    // 途中終了した後は判定しない（APP-SKN-14）
+    let quitting = game.skin.as_ref().is_some_and(|sp| sp.play.quitting());
+    let out = if quitting {
+        vec![]
+    } else {
+        let mut audio = BevyAudio {
+            commands: &mut commands,
+            sounds: &game.sounds,
+        };
+        game.session.frame(t, &events, &mut audio)
     };
-    let out = game.session.frame(t, &events, &mut audio);
     if let Some(sp) = game.skin.as_mut() {
         // 皿の向き: 1 つ目のキーは上、2 つ目は下（両方なら止める）
         sp.play
             .set_scratch(game.scratch[1] as i32 - game.scratch[0] as i32);
         sp.play.update(t, &game.session, &out);
         sp.play.control(&ctrl);
+        // 途中終了（APP-SKN-14）はリザルトスキンがあるとき（無ければ Esc ですぐ選曲に戻る）
+        if result.is_some() {
+            let quit = QuitInput {
+                escape: keys.pressed(KeyCode::Escape),
+                mouse_right: game.mouse_right,
+                start_held: game.control[0],
+                select_held: game.control[1],
+            };
+            sp.play.quit(&quit, game.session.play().total_notes());
+        }
         if sp.play.scene_over() {
             game.over = true;
         }
     }
     // 終わったら 1 回だけ記録を保存する
-    if game.saved.is_none() && game.session.play().is_finished() {
-        let record = game.session.record();
-        let saved = match scores.0.as_mut().and_then(|m| m.get_mut().ok()) {
-            Some(db) => application::usecase::save_play(db.as_mut(), &record, game.save_mode)
-                .map_err(|e| eprintln!("記録を保存できない: {e:?}"))
-                .ok()
-                .flatten(),
-            None => None,
-        };
-        game.saved = Some(saved);
+    if game.session.play().is_finished() {
+        save_once(game, &mut scores);
     }
     for e in out {
         if let PlayEvent::Judge { judge, .. } = e {
             game.last_judge = Some((judge, t));
         }
+    }
+}
+
+/// 記録を 1 回だけ保存する
+fn save_once(game: &mut Game, scores: &mut ScoreDb) {
+    if game.saved.is_some() {
+        return;
+    }
+    let record = game.session.record();
+    let saved = match scores.0.as_mut().and_then(|m| m.get_mut().ok()) {
+        Some(db) => application::usecase::save_play(db.as_mut(), &record, game.save_mode)
+            .map_err(|e| eprintln!("記録を保存できない: {e:?}"))
+            .ok()
+            .flatten(),
+        None => None,
+    };
+    game.saved = Some(saved);
+}
+
+/// プレイの場面が閉じたら（リザルトスキンがあるとき）、LR2 と同じくリザルトか選曲（譜面を直接渡して起動したなら終了）へ
+fn close_play(
+    mut commands: Commands,
+    mut game: ResMut<Game>,
+    mut scores: ResMut<ScoreDb>,
+    boot: Res<Boot>,
+    mut next: ResMut<NextState<Scene>>,
+    mut exit: MessageWriter<AppExit>,
+) {
+    let game = &mut *game;
+    // LR2 は場面を閉じるときに保存する（まだなら）
+    save_once(game, &mut scores);
+    // 場面が閉じるのはプレイスキンで描いているときだけ
+    let result = game
+        .skin
+        .as_ref()
+        .map(|sp| sp.play.result(&game.session, game.saved.clone().flatten()));
+    let auto = game.session.is_autoplay();
+    let to = result
+        .as_ref()
+        .map(|r| after_play(auto, r.processed, &r.counts));
+    match (to, result) {
+        (Some(AfterPlay::Result), Some(result)) => {
+            commands.insert_resource(result_scene::PendingResult {
+                result,
+                path: game.path.clone(),
+                seed: game.seed,
+            });
+            next.set(Scene::Result);
+        }
+        _ if boot.direct => {
+            exit.write(AppExit::Success);
+        }
+        _ => next.set(Scene::Select),
     }
 }
 
@@ -873,7 +991,7 @@ fn draw_skin(mut p: SkinDraw, mut game: ResMut<Game>) {
 #[derive(Component)]
 struct ResultText;
 
-/// 場面が終わったら結果を出す（結果画面ができるまでの仮）
+/// 場面が終わったら結果を文字で出す（リザルトスキンが無いとき）
 fn show_result(
     mut commands: Commands,
     mut game: ResMut<Game>,

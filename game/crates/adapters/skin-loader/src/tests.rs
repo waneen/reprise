@@ -180,7 +180,8 @@ fn adp_sk_09_color_key(
 
 /// ADP-SK-10: 場面の時間
 #[rstest]
-#[case::lr2(vec![("STARTINPUT", "500"), ("LOADSTART", "100"), ("LOADEND", "1500"), ("PLAYSTART", "1000"), ("FADEOUT", "2000"), ("CLOSE", "1200")], d::SceneTiming { start_input: 500, load_start: 100, load_end: 1500, play_start: 1000, fade_out: 2000, close: 1200 })]
+#[case::lr2(vec![("STARTINPUT", "500"), ("LOADSTART", "100"), ("LOADEND", "1500"), ("PLAYSTART", "1000"), ("FADEOUT", "2000"), ("CLOSE", "1200")], d::SceneTiming { start_input: 500, load_start: 100, load_end: 1500, play_start: 1000, fade_out: 2000, close: 1200, ..Default::default() })]
+#[case::result_rank_update(vec![("STARTINPUT", "500,1000,1500")], d::SceneTiming { start_input: 500, start_input_rank: 1000, start_input_update: 1500, ..Default::default() })]
 #[case::beatoraja_input_and_skip(vec![("INPUT", "300"), ("SKIP", "800")], d::SceneTiming { start_input: 300, close: 800, ..Default::default() })]
 #[case::last_wins(vec![("FADEOUT", "100"), ("FADEOUT", "200")], d::SceneTiming { fade_out: 200, ..Default::default() })]
 #[case::none(vec![], d::SceneTiming::default())]
@@ -190,7 +191,7 @@ fn adp_sk_10_scene_timing(#[case] directives: Vec<(&str, &str)>, #[case] expecte
         .into_iter()
         .map(|(c, a)| sc::Directive {
             command: c.into(),
-            args: vec![a.into()],
+            args: a.split(',').map(String::from).collect(),
         })
         .collect();
     assert_eq!(map_skin(dc, None).timing, expected);
