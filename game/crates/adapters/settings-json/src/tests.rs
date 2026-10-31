@@ -48,6 +48,7 @@ fn sjs_01_missing(#[case] rel: &str) {
         "LR2files/Theme/x/play.csv".into(),
         [("Side".to_string(), "2P".to_string())].into_iter().collect(),
     );
+    s.tables = vec!["https://example.invalid/table.html".into()];
     s
 })]
 fn sjs_02_round_trip(#[case] s: Settings) {
@@ -228,4 +229,16 @@ fn sjs_10_select_filter(#[case] text: &str, #[case] want: (i32, i32, i32), #[cas
     let back = from_json(&to_json(&s)).unwrap();
     assert_eq!((back.select, back.preview), (s.select, s.preview));
     assert!(from_json(&serde_json::json!({"preview": 1})).is_err());
+}
+
+/// SJS-11: 難易度表
+#[rstest]
+#[case::missing("{}", Some(vec![]))]
+#[case::given(r#"{"tables": ["https://a.invalid/", "https://b.invalid/h.json"]}"#, Some(vec!["https://a.invalid/", "https://b.invalid/h.json"]))]
+#[case::not_string(r#"{"tables": [1]}"#, None)]
+#[case::not_array(r#"{"tables": "x"}"#, None)]
+fn sjs_11_tables(#[case] text: &str, #[case] want: Option<Vec<&str>>) {
+    let v: Value = serde_json::from_str(text).unwrap();
+    let got = from_json(&v).ok().map(|s| s.tables);
+    assert_eq!(got, want.map(|w| w.iter().map(|s| s.to_string()).collect()));
 }
