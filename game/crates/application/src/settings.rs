@@ -33,6 +33,50 @@ pub struct Settings {
     pub preview: bool,
     /// 難易度表の URL（beatoraja と同じく HTML の `bmstable` かヘッダの JSON。reprise の拡張）
     pub tables: Vec<String>,
+    /// 画面（LR2 の `config.system` の `screenmode`・`windowsize_x`・`windowsize_y`・`vsync`）
+    pub screen: Screen,
+    /// 音量（0..=100。LR2 の `config.sound.volumemaster`）
+    pub volume: i32,
+    /// つなぐ曲サーバー（ブラウザ版。reprise の拡張。URL が空ならつながない）
+    pub server: ServerAddress,
+}
+
+/// 画面の出し方（LR2 の `screenmode`: 0 = フルスクリーン、1 = ウィンドウ）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ScreenMode {
+    #[default]
+    Window,
+    /// LR2 と同じくデスクトップの解像度のまま画面全体に出す（`DX_FSRESOLUTIONMODE_DESKTOP`）
+    Fullscreen,
+}
+
+/// 画面
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Screen {
+    pub mode: ScreenMode,
+    /// ウィンドウの大きさ（ピクセル）
+    pub width: u32,
+    pub height: u32,
+    /// 垂直同期（LR2 の既定は切）
+    pub vsync: bool,
+}
+
+impl Default for Screen {
+    fn default() -> Self {
+        Self {
+            mode: ScreenMode::Window,
+            width: 1280,
+            height: 720,
+            vsync: false,
+        }
+    }
+}
+
+/// 曲サーバーの URL と合言葉
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ServerAddress {
+    pub url: String,
+    pub token: String,
 }
 
 impl Default for Settings {
@@ -51,6 +95,9 @@ impl Default for Settings {
             select: ListFilter::default(),
             preview: true,
             tables: vec![],
+            screen: Screen::default(),
+            volume: 100,
+            server: ServerAddress::default(),
         }
     }
 }
