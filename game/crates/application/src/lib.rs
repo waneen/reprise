@@ -27,6 +27,9 @@
 //! | APP-TBL-01 | 難易度表（reprise の拡張）: 手元に保存した表を設定の順に出す（無いものは飛ばす） |
 //! | APP-TBL-02 | 起動時は手元に無い表だけ取ってくる（beatoraja `loadNewTableData`）。取れなければ飛ばす |
 //! | APP-TBL-03 | 取り直し（beatoraja `updateTableData`）: すべての表を取ってくる。取れなかった表は手元のまま |
+//! | APP-LCH-01 | ランチャーの一覧（譜面のフォルダ・難易度表の URL）に足す: 前後の空白を除き、空か同じものがあれば足さない |
+//! | APP-LCH-02 | 曲サーバーの URL: 前後の空白と末尾の `/` を除き、空ならつながない。`http://` か `https://`（大文字小文字は問わない）の後ろが空でなく `/` で始まらなければよく、それ以外は誤り |
+//! | APP-LCH-03 | 画面と音量を範囲に収める: ウィンドウの幅 320..=7680・高さ 240..=4320、音量 0..=100 |
 //! | APP-PLY-01 | プレイ入力: レーンは割り当てた物理キーのどれかが押されていれば押下中。割り当ての無いキーは無視 |
 //! | APP-PLY-02 | プレイ入力: 1 フレームで渡すレーンの変化（押した・離した）は 1 回まで。残りは次のフレームに回す |
 //! | APP-PLY-03 | プレイ: キー音と BGM はそのフレームの時刻で `AudioOutput` に渡す |
@@ -75,6 +78,7 @@
 pub mod custom_folder;
 mod key_timers;
 pub mod keyconfig_skin;
+pub mod launcher;
 pub mod library;
 pub mod play;
 pub mod play_options;
