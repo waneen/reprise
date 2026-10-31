@@ -13,4 +13,6 @@ encoding_rs = "0.8"
 
 [dev-dependencies]
 rstest.workspace = true
+# SNG-07: 記録の DB は reprise の score.db の形
+score-db = { path = "../score-db" }
 tempfile.workspace = true
