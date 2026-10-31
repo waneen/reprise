@@ -1,0 +1,31 @@
+[package]
+name = "reprise-server"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# 曲サーバー（reprise の拡張）: 曲の DB・フォルダの見張り・難易度表・記録を持ち、ブラウザ版に曲・音・画像・スキンを配る。ネイティブだけ
+[dependencies]
+domain.workspace = true
+application.workspace = true
+remote = { path = "../adapters/remote" }
+chart-loader = { path = "../adapters/chart-loader" }
+file-system = { path = "../adapters/file-system" }
+settings-json = { path = "../adapters/settings-json" }
+library-watch = { path = "../adapters/library-watch" }
+song-db = { path = "../adapters/song-db" }
+score-db = { path = "../adapters/score-db" }
+bms-table = { path = "../adapters/bms-table" }
+reprise-chart-bms.workspace = true
+reprise-chart-bmson.workspace = true
+axum = "0.8"
+tokio = { version = "1", features = ["rt-multi-thread", "net"] }
+tower-http = { version = "0.6", features = ["fs", "cors", "compression-gzip"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+getrandom = "0.3"
+
+[dev-dependencies]
+rstest.workspace = true
+tempfile.workspace = true
+ureq = "3"
