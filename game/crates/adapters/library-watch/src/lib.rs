@@ -7,13 +7,14 @@
 //! | ID | ルール |
 //! |---|---|
 //! | LWT-01 | 始めると DB の曲一覧をすぐ返し、その後の起動時の確かめで何か変われば新しい曲一覧を届ける |
-//! | LWT-02 | 見張り: 登録したフォルダの中で譜面が足された・消えたら、読み直した曲一覧を届ける |
+//! | LWT-02 | 見張り: 登録したフォルダの中で譜面が足された・消えたら（前からあるフォルダの中でも）、読み直した曲一覧を届ける。開いた・読んだだけの知らせ（書いて閉じた知らせ以外の `Access`）は見ない（読み直しで読んだ知らせでまた読み直さない） |
 //! | LWT-03 | 知らせのまとめ方: 最後の知らせから 300ms 何も来ないか、最初の知らせから 2 秒たったら、それまでのパスを重ねずにまとめて読み直す |
 //! | LWT-04 | 作り直し（`rebuild`）: DB を空にして確かめ直し、曲一覧を届ける |
 use application::library::{self, Scan};
 use application::ports::{ChartLoader, FileSystem, LibrarySource, PortError};
 use domain::select::Library;
-use notify::{RecursiveMode, Watcher};
+use notify::event::{AccessKind, AccessMode};
+use notify::{EventKind, RecursiveMode, Watcher};
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender};
@@ -99,6 +100,9 @@ impl LocalLibrary {
             // 見張りを先に始めて、確かめている間の変更も落とさない
             let watcher = notify::recommended_watcher(move |ev: notify::Result<notify::Event>| {
                 if let Ok(ev) = ev {
+                    if !worth(&ev.kind) {
+                        return;
+                    }
                     let paths = ev.paths.into_iter().map(|p| to_registered(&real, p));
                     let _ = watch_tx.send(Msg::Changed(paths.collect()));
                 }
@@ -126,6 +130,14 @@ impl LocalLibrary {
     /// LWT-04: DB を作り直す
     pub fn rebuild(&self) {
         let _ = self.tx.send(Msg::Rebuild);
+    }
+}
+
+/// 読み直すきっかけになる知らせか（開いた・読んだだけの知らせは見ない。LWT-02）
+fn worth(kind: &EventKind) -> bool {
+    match kind {
+        EventKind::Access(a) => *a == AccessKind::Close(AccessMode::Write),
+        _ => true,
     }
 }
 
