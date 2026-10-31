@@ -364,6 +364,34 @@ fn sng_07_query(
     assert_eq!(got, want);
 }
 
+/// SNG-09: 読むだけの接続
+#[rstest]
+#[case::select("SELECT * FROM song LEFT JOIN score ON song.hash = score.hash WHERE 1 = 1", true, Ok(vec!["/b/1.bms"]))]
+#[case::delete("DELETE FROM song", true, Err(()))]
+#[case::two_statements("SELECT * FROM song; DELETE FROM song", true, Err(()))]
+#[case::delete_allowed_natively("DELETE FROM song", false, Ok(vec![]))]
+fn sng_09_read_only(
+    dir: TempDir,
+    #[case] sql: &str,
+    #[case] read_only: bool,
+    #[case] want: Result<Vec<&str>, ()>,
+) {
+    let mut db = SqliteSongDb::open(&dir.path().join("song.db")).unwrap();
+    db.put_song(&song("/b/1.bms", 1, None), 1).unwrap();
+    let (song_db, score_db) = (dir.path().join("song.db"), dir.path().join("score.db"));
+    let q = if read_only {
+        SqliteSongQuery::open_read_only(&song_db, &score_db).unwrap()
+    } else {
+        SqliteSongQuery::open(&song_db, &score_db).unwrap()
+    };
+    let got = q.song_paths(sql).map_err(|_| ());
+    let want = want.map(|v| v.iter().map(|p| PathBuf::from(sep(p))).collect::<Vec<_>>());
+    assert_eq!(got, want);
+    // 読むだけの接続では行は消えない
+    let left = SqliteSongDb::open(&song_db).unwrap().songs().unwrap().len();
+    assert_eq!(left, if read_only { 1 } else { 0 });
+}
+
 /// SNG-08: Shift_JIS
 #[rstest]
 #[case::kana(&[0x83, 0x65, 0x83, 0x58, 0x83, 0x67], "テスト")]
