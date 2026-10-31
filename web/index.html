@@ -18,9 +18,6 @@
   input[type=file] { display: none; }
   #server { border-top: 1px solid #333; margin-top: 20px; padding-top: 16px; }
   #server h2 { font-size: 16px; margin: 0 0 4px; }
-  #server input { font-size: 14px; padding: 7px 8px; background: #1b1b1b; color: #ddd; border: 1px solid #444; border-radius: 6px; }
-  #server-url { flex: 1 1 260px; }
-  #server-token { flex: 1 1 160px; }
   #status { color: #aaa; font-size: 13px; min-height: 1.4em; margin-top: 8px; white-space: pre-wrap; }
   #game { display: none; position: fixed; inset: 0; }
   #game canvas { width: 100%; height: 100%; display: block; outline: none; }
@@ -28,7 +25,7 @@
 </head>
 <body>
 <!-- ブラウザはフォルダを読めないので、ネイティブ版の config.json の songs と skin_root に当たるフォルダだけをここで選ぶ。
-     ほかはネイティブ版と同じ（選曲画面から始まる。設定はこのページの保存領域に config.json と同じ中身で置く） -->
+     ほかはネイティブ版と同じ（ランチャーから始まる。設定はこのページの保存領域に config.json と同じ中身で置く） -->
 <div id="setup">
   <h1>reprise（ブラウザ版）</h1>
   <p>選んだフォルダのファイルはこのページの中だけで読み、どこにも送りません。キーは 皿 = 左 Shift / 左 Ctrl、鍵盤 = Z S X D C F V、START = Q、SELECT = W。</p>
@@ -44,13 +41,9 @@
   </div>
   <button id="start" disabled>はじめる</button>
   <div id="server">
-    <h2>曲サーバーにつなぐ</h2>
-    <p>reprise-server の曲・記録・スキンを使います（譜面のフォルダを選ぶ代わり）。合言葉はサーバーを始めたときに出ます。</p>
-    <div class="pick">
-      <input id="server-url" placeholder="サーバーの URL（例: http://localhost:8770/）" autocomplete="url">
-      <input id="server-token" placeholder="合言葉" type="password" autocomplete="off">
-      <button id="connect">つなぐ</button>
-    </div>
+    <h2>曲サーバーを使う</h2>
+    <p>reprise-server の曲・記録・スキンを使います（譜面のフォルダを選ぶ代わり）。URL と合言葉は起動した後のランチャーで入れます。</p>
+    <button id="use-server" class="sub">ランチャーを開く</button>
   </div>
   <div id="status"></div>
 </div>
@@ -136,45 +129,35 @@ async function launch(args) {
   }
 }
 
-// 曲サーバー: このページをサーバーが配っていればその URL、`#token=…` があればその合言葉を入れておく
-const SERVER_KEY = "reprise/server";
-$("server-url").value = localStorage.getItem(SERVER_KEY) || (location.protocol.startsWith("http") ? location.origin + "/" : "");
+// 曲サーバー: ランチャーで「開始」するとゲームが globalThis.repriseServer（{ url, token }）を置く。
+// `#token=…` 付きで開いたら（曲サーバーが配ったページ）、ランチャーにこのページの URL と合言葉を入れておく
 const hashToken = new URLSearchParams(location.hash.slice(1)).get("token");
-if (hashToken) $("server-token").value = hashToken;
+if (hashToken && location.protocol.startsWith("http")) {
+  globalThis.repriseServerHint = { url: location.origin + "/", token: hashToken };
+}
+// ゲームからの頼み（ファイル・曲一覧・記録）を同期の XMLHttpRequest で送る。中身はバイトのまま受ける
+globalThis.repriseHttp = (method, target, body) => {
+  const server = globalThis.repriseServer;
+  if (!server) return { status: 0, body: new Uint8Array(0) };
+  const x = new XMLHttpRequest();
+  try {
+    x.open(method, server.url + target, false);
+    x.setRequestHeader("Authorization", "Bearer " + server.token);
+    if (body) x.setRequestHeader("Content-Type", "application/json");
+    x.overrideMimeType("text/plain; charset=x-user-defined");
+    x.send(body ?? null);
+  } catch (e) {
+    return { status: 0, body: new Uint8Array(0) };
+  }
+  const t = x.responseText || "";
+  const b = new Uint8Array(t.length);
+  for (let i = 0; i < t.length; i++) b[i] = t.charCodeAt(i) & 0xff;
+  return { status: x.status, body: b };
+};
 
-$("connect").onclick = async () => {
-  const url = $("server-url").value.trim().replace(/\/+$/, "");
-  const token = $("server-token").value.trim();
-  if (!url) return;
-  const auth = { Authorization: "Bearer " + token };
-  $("status").textContent = "つないでいます…";
-  let res;
-  try { res = await fetch(url + "/api/version", { headers: auth }); } catch (e) { res = null; }
-  if (!res) { $("status").textContent = "曲サーバーにつながりません: " + url; return; }
-  if (res.status === 401) { $("status").textContent = "合言葉が違います"; return; }
-  if (!res.ok) { $("status").textContent = `曲サーバーが答えません（${res.status}）`; return; }
-  localStorage.setItem(SERVER_KEY, url + "/");
+$("use-server").onclick = async () => {
   for (const b of document.querySelectorAll("button")) b.disabled = true;
-  globalThis.repriseServer = { url, token };
-  // ゲームからの頼み（ファイル・曲一覧・記録）を同期の XMLHttpRequest で送る。中身はバイトのまま受ける
-  globalThis.repriseHttp = (method, target, body) => {
-    const x = new XMLHttpRequest();
-    try {
-      x.open(method, url + target, false);
-      x.setRequestHeader("Authorization", auth.Authorization);
-      if (body) x.setRequestHeader("Content-Type", "application/json");
-      x.overrideMimeType("text/plain; charset=x-user-defined");
-      x.send(body ?? null);
-    } catch (e) {
-      return { status: 0, body: new Uint8Array(0) };
-    }
-    const t = x.responseText || "";
-    const b = new Uint8Array(t.length);
-    for (let i = 0; i < t.length; i++) b[i] = t.charCodeAt(i) & 0xff;
-    return { status: x.status, body: b };
-  };
-  $("status").textContent = "";
-  await launch(["--skin-root", "/skin"]);
+  await launch([]);
 };
 
 $("start").onclick = async () => {
