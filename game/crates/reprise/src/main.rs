@@ -1,18 +1,20 @@
 //! Composition Root + プレゼンテーション層（Bevy はここだけ）。
 //! 記法を増やす = chart-formats/ か skin-formats/ に crate を足して、ここで 1 行登録するだけ。
 //!
-//! 使い方: `reprise --songs <フォルダ> [オプション]` で選曲から、`reprise <譜面ファイル> [オプション]` でその譜面のプレイから（オプションは [`USAGE`]）。
-//! 7 鍵（5 鍵）のシングルプレイの画面（1P と 2P の割り当てのどちらでも遊べる）。`--skin` で LR2 のプレイスキンで描き、無ければ四角形だけで描く。
-//! 選曲画面は `--select-skin` で LR2 の選曲スキンで描き、無ければ文字の一覧で描く。選曲スキンの BUTTON 13 で
+//! 使い方: `reprise [オプション]` でランチャー（設定画面。`launcher`）から、`reprise <譜面ファイル> [オプション]` でその譜面のプレイから
+//! （オプションは [`USAGE`]）。ランチャーの「開始」で選曲画面に入る（LR2 のランチャーが本体を起動するのと同じ）。
+//! 7 鍵（5 鍵）のシングルプレイの画面（1P と 2P の割り当てのどちらでも遊べる）。プレイスキンがあれば LR2 のプレイスキンで描き、無ければ四角形だけで描く。
+//! 選曲画面は選曲スキンがあれば LR2 の選曲スキンで描き、無ければ文字の一覧で描く。選曲スキンの BUTTON 13 で
 //! キー設定画面に入る（`config.json` の `keyconfig_skin` のキー設定スキンで描く。無ければ入らない）。
 //! 遊び終えると `config.json` の `result_skin` のリザルトスキンでリザルト画面を出す（無ければ結果を文字で出す）。
 //! `--skin-root` はスキン中のパスの基準（LR2 なら LR2 本体のフォルダ。既定は今のフォルダ）。
 //! `config.json` に無いスキンは LR2 本体の `LR2files/Config/config.xml` で選んでいるもの。
 //! 曲一覧は `--data` のフォルダの `song.db`（LR2 の song.db と同じテーブル）に置き、譜面のフォルダを見張って作り直す（ネイティブ版）。
 //! 記録は `--data` のフォルダ（既定は今のフォルダの `reprise-data`）の `score.db` に、設定は `config.json` に保存する
-//! （起動引数で渡した設定も保存するので、次からは引数無しで選曲から始められる）。
+//! （ランチャーで選んだものと起動引数で渡した設定を保存する）。
 mod input;
 mod keyconfig_scene;
+mod launcher;
 mod platform;
 mod preview;
 mod result_scene;
@@ -25,9 +27,9 @@ use application::play_skin::{PlaySkin, QuitInput};
 use application::ports::{AudioOutput, ChartLoader, FileSystem, SkinLoader};
 use application::result_skin::{after_play, AfterPlay};
 use application::select_skin::OptionNames;
-use application::settings::Settings;
+use application::settings::{Screen, ScreenMode, Settings};
 use application::usecase::SavedScore;
-use bevy::audio::AudioSource;
+use bevy::audio::{AudioSource, GlobalVolume, Volume};
 use bevy::ecs::system::RunSystemOnce;
 use bevy::input::mouse::MouseWheel;
 use bevy::platform::time::Instant;
@@ -35,13 +37,13 @@ use bevy::prelude::*;
 use bevy::sprite::update_text2d_layout;
 use bevy::text::FontSource;
 use bevy::transform::TransformSystems;
-use bevy::window::{PresentMode, WindowResolution};
+use bevy::window::{MonitorSelection, PresentMode, WindowMode, WindowResolution};
 use chart_loader::DecoderLoader;
 use domain::chart::ChartHash;
 use domain::chart::{Chart, ImageId, Lane, SoundId};
 use domain::input::{SELECT, START};
 use domain::play::RulesetId;
-use domain::play::{GaugeType, HsFix, Judge, PlayEvent};
+use domain::play::{GaugeType, Judge, PlayEvent};
 use domain::random::LegacyMt;
 use domain::score::{SaveMode, ScoreRecord};
 use domain::select::Library;
@@ -60,8 +62,8 @@ const LEAD_IN_MS: i64 = 2000;
 /// 判定ラインから上端までに見える拍数（スキン無しのとき）
 const VISIBLE_BEATS: f64 = 4.0;
 
-const USAGE: &str = "使い方: reprise [--songs <譜面のフォルダ>...] [<譜面ファイル>] [--gauge groove|easy|hard|death|pattack|gattack] [--skin <スキン>] [--select-skin <スキン>] [--skin-root <フォルダ>] \
-[--hs <ハイスピード×100>] [--hsfix off|max|min|avg|const|main] [--cover <0..100>] [--offset <ms>] [--auto] [--data <フォルダ>]";
+/// プレイオプション・スキン・画面・音はランチャーで選ぶ（譜面のフォルダと LR2 本体のフォルダは起動引数でも渡せる）
+const USAGE: &str = "使い方: reprise [<譜面ファイル>] [--songs <譜面のフォルダ>...] [--skin-root <LR2 本体のフォルダ>] [--auto] [--data <フォルダ>]";
 
 /// 記録などを置くフォルダの既定（今のフォルダから）
 const DATA_DIR: &str = "reprise-data";
@@ -175,30 +177,6 @@ pub fn load_skin(
     Ok((skin, images))
 }
 
-fn parse_hs_fix(s: &str) -> Option<HsFix> {
-    Some(match s.to_ascii_lowercase().as_str() {
-        "off" => HsFix::Off,
-        "max" => HsFix::MaxBpm,
-        "min" => HsFix::MinBpm,
-        "avg" => HsFix::Average,
-        "const" => HsFix::Constant,
-        "main" => HsFix::MainBpm,
-        _ => return None,
-    })
-}
-
-fn parse_gauge(s: &str) -> Option<GaugeType> {
-    Some(match s.to_ascii_lowercase().as_str() {
-        "groove" | "normal" => GaugeType::Groove,
-        "easy" => GaugeType::Easy,
-        "hard" => GaugeType::Hard,
-        "death" => GaugeType::Hazard,
-        "pattack" => GaugeType::PAttack,
-        "gattack" => GaugeType::GAttack,
-        _ => return None,
-    })
-}
-
 /// rodio で読めない音は登録しない（Bevy は読めない音を鳴らそうとすると止まるため）
 fn decodable(bytes: &Arc<[u8]>) -> bool {
     rodio::Decoder::builder()
@@ -278,7 +256,9 @@ pub(crate) fn load(fs: &dyn FileSystem, path: &Path, seed: u32) -> Result<(Chart
 /// 場面
 #[derive(States, Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Scene {
+    /// ランチャー（設定画面。「開始」で選曲へ）
     #[default]
+    Launcher,
     Select,
     Play,
     /// キー設定（選曲スキンの BUTTON 13 から）
@@ -309,6 +289,19 @@ pub struct Boot {
     skin_root: PathBuf,
     /// 譜面を直接渡して起動した（終わったら選曲に戻らずに終了する）
     pub direct: bool,
+}
+
+/// 起動したときに決めたこと（ランチャーの前に決まる）
+#[derive(Resource)]
+pub struct Launch {
+    /// 記録・設定・曲の DB を置くフォルダ（`--data`）
+    pub data_dir: PathBuf,
+    /// オートプレイ（`--auto`。保存しない）
+    auto: bool,
+    /// 譜面を直接渡して起動した
+    direct: bool,
+    /// ランチャーで「曲の DB を作り直す」を選んだ
+    pub rebuild: bool,
 }
 
 /// 記録の保存先（開けなければ・ブラウザ版は None。sqlite の接続は Sync でないので Mutex に入れる）
@@ -389,7 +382,6 @@ fn pick_skin(
 
 fn main() {
     let args = platform::args();
-    let fs = platform::file_system();
     // 先に --data だけ見て設定を読み、ほかの引数で上書きする
     let data_dir = args
         .iter()
@@ -412,21 +404,9 @@ fn main() {
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().unwrap_or_else(|| usage());
-        let mut number = || value().parse::<i32>().unwrap_or_else(|_| usage());
-        let o = &mut settings.options;
         match a.as_str() {
             "--songs" => cli_songs.push(PathBuf::from(value())),
-            "--skin" => settings.skin = Some(PathBuf::from(value())),
-            "--select-skin" => settings.select_skin = Some(PathBuf::from(value())),
             "--skin-root" => settings.skin_root = Some(PathBuf::from(value())),
-            "--gauge" => settings.gauge = parse_gauge(value()).unwrap_or_else(|| usage()),
-            "--hs" => o.hi_speed = number(),
-            "--hsfix" => o.hs_fix = parse_hs_fix(value()).unwrap_or_else(|| usage()),
-            "--cover" => {
-                o.lane_cover = true;
-                o.cover = number();
-            }
-            "--offset" => o.judge_offset = number(),
             "--auto" => auto = true,
             "--data" => {
                 value();
@@ -439,12 +419,8 @@ fn main() {
         settings.songs = cli_songs;
     }
     settings.options = settings.options.clamped();
-    // 曲サーバーにつないだブラウザ版はサーバーの曲を使う
-    if chart_path.is_none() && settings.songs.is_empty() && !platform::has_server() {
-        usage();
-    }
     let settings = SettingsRes {
-        saved: settings,
+        saved: application::launcher::clamped(settings),
         store,
     };
     // 起動引数で変えた設定は次の起動にも使う
@@ -452,127 +428,47 @@ fn main() {
     {
         save_settings(&settings);
     }
-    let s = &settings.saved;
-    let options = PlayOptions { auto, ..s.options };
-    #[cfg(not(target_arch = "wasm32"))]
-    let _ = platform::score_importers();
-    let scores = ScoreDb(platform::open_scores(&data_dir).map(Mutex::new));
     let direct = chart_path.is_some();
-    let table_feed = select_scene::TableFeed::default();
-    let (library, feed, query) = if direct {
-        (Library::default(), None, None)
-    } else {
-        let (lib, feed) = platform::library(&data_dir, &s.songs, fs.clone(), chart_loaders);
-        eprintln!("譜面 {} 件", lib.songs().len());
-        // 難易度表: 手元のものですぐ出し、手元に無いものは別のスレッドで取ってくる（beatoraja の起動時と同じ）
-        let lib = match platform::table_source(&data_dir) {
-            Some(src) => {
-                let cached = application::tables::cached(src.as_ref(), &s.tables);
-                let urls = s.tables.clone();
-                let out = table_feed.0.clone();
-                std::thread::spawn(move || {
-                    if application::tables::fetch_missing(src.as_ref(), &urls) {
-                        let t = application::tables::cached(src.as_ref(), &urls);
-                        *out.lock().unwrap_or_else(|e| e.into_inner()) = Some(t);
-                    }
-                });
-                lib.with_tables(cached)
-            }
-            None => lib,
-        };
-        (lib, feed, platform::song_query(&data_dir))
-    };
-    let skin_root = s
-        .skin_root
-        .clone()
-        .unwrap_or_else(platform::default_skin_root);
-    // config.json に無いスキンは LR2 本体の設定で選んでいるもの（LR2 と同じ）
-    let lr2 = lr2_skins(fs.as_ref(), &skin_root);
-    let play_skin = pick_skin(s, &s.skin, &lr2, "play_7");
-    let boot = Boot {
-        fs,
-        gauge: s.gauge,
-        options,
-        skin_path: play_skin.as_ref().map(|(p, _)| p.clone()),
-        skin_custom: play_skin.map(|(_, c)| c).unwrap_or_default(),
-        skin_root,
+    let screen = settings.saved.screen;
+    let volume = settings.saved.volume;
+    let bindings = settings.saved.bindings.clone();
+    let launch = Launch {
+        data_dir,
+        auto,
         direct,
+        rebuild: false,
     };
-    let input_map = input::InputMap::new(s.bindings.clone());
-    let s_select = s.select;
-    let option_names = option_names(boot.fs.as_ref(), &boot.skin_root);
-    // 選曲スキン（読めなければ文字の一覧）
-    let select_skin = match (pick_skin(s, &s.select_skin, &lr2, "select"), direct) {
-        (Some((p, custom)), false) => load_skin(
-            &boot.fs,
-            &p,
-            boot.skin_root.clone(),
-            &[SceneKind::Select],
-            &custom,
-        )
-        .map_err(|e| eprintln!("選曲スキンを読めないので文字の一覧で出す: {e}"))
-        .ok(),
-        _ => None,
-    };
-    // キー設定スキン（選曲スキンの BUTTON 13 から入る。無い・読めなければ BUTTON 13 は何もしない）
-    let keyconfig_skin = match (
-        pick_skin(s, &s.keyconfig_skin, &lr2, "keyconfig"),
-        &select_skin,
-    ) {
-        (Some((p, custom)), Some(_)) => load_skin(
-            &boot.fs,
-            &p,
-            boot.skin_root.clone(),
-            &[SceneKind::KeyConfig],
-            &custom,
-        )
-        .map_err(|e| eprintln!("キー設定スキンを読めない: {e}"))
-        .ok(),
-        _ => None,
-    };
-    // リザルトスキン（無い・読めなければ結果を文字で出す）
-    let result_skin = pick_skin(s, &s.result_skin, &lr2, "result").and_then(|(p, custom)| {
-        load_skin(
-            &boot.fs,
-            &p,
-            boot.skin_root.clone(),
-            &[SceneKind::Result],
-            &custom,
-        )
-        .map_err(|e| eprintln!("リザルトスキンを読めないので結果を文字で出す: {e}"))
-        .ok()
-    });
 
     let mut app = App::new();
     app.add_plugins(DefaultPlugins.set(WindowPlugin {
         primary_window: Some(Window {
             title: "reprise".into(),
-            resolution: WindowResolution::new(1280, 720),
-            // LR2 と同じく入力を読むループをできるだけ速く回す（ブラウザでは画面の更新に合わせて回る）
-            present_mode: PresentMode::AutoNoVsync,
             // ブラウザ版はページの canvas に描き、大きさをページに合わせる
             canvas: cfg!(target_arch = "wasm32").then(|| "#bevy".into()),
             fit_canvas_to_parent: true,
-            ..default()
+            ..window(&screen)
         }),
         ..default()
     }))
     .add_plugins(SkinRenderPlugin)
-    .insert_state(if direct { Scene::Play } else { Scene::Select })
-    .insert_resource(boot)
+    .add_plugins(launcher::LauncherPlugin)
+    .insert_state(if direct { Scene::Play } else { Scene::Launcher })
     .insert_resource(settings)
-    .insert_resource(input_map)
+    .insert_resource(launch)
+    .insert_resource(GlobalVolume::new(volume_of(volume)))
+    .insert_resource(input::InputMap::new(bindings))
     .init_resource::<input::SlotInput>()
-    .insert_resource(scores)
+    // 「開始」までの空のもの（`start` で置き換える）
+    .insert_resource(ScoreDb(None))
     .insert_resource(select_scene::Selection::new(
-        library,
-        select_skin,
-        s_select,
-        option_names,
-        query,
+        Library::default(),
+        None,
+        Default::default(),
+        OptionNames::default(),
+        None,
     ))
-    .insert_resource(select_scene::LibraryFeed(feed))
-    .insert_resource(table_feed)
+    .insert_resource(select_scene::LibraryFeed(None))
+    .init_resource::<select_scene::TableFeed>()
     .init_resource::<preview::PreviewPlayer>()
     .add_systems(
         PreUpdate,
@@ -640,13 +536,8 @@ fn main() {
             .after(update_text2d_layout)
             .before(TransformSystems::Propagate),
     );
-    if let Some((skin, pixels)) = keyconfig_skin {
-        app.insert_resource(keyconfig_scene::KeyConfigScreen::new(skin, pixels));
-    }
-    if let Some((skin, pixels)) = result_skin {
-        app.insert_resource(result_scene::ResultScreen::new(skin, pixels));
-    }
     if let Some(path) = chart_path {
+        start(app.world_mut());
         app.insert_resource(PlayRequest {
             path,
             auto: false,
@@ -654,6 +545,166 @@ fn main() {
         });
     }
     app.run();
+}
+
+/// 画面の設定のウィンドウ（LR2 のフルスクリーンはデスクトップの解像度のまま。垂直同期を切れば LR2 と同じく
+/// 入力を読むループをできるだけ速く回す。ブラウザでは画面の更新に合わせて回る）
+fn window(s: &Screen) -> Window {
+    Window {
+        mode: match s.mode {
+            ScreenMode::Window => WindowMode::Windowed,
+            ScreenMode::Fullscreen => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
+        },
+        resolution: WindowResolution::new(s.width, s.height),
+        present_mode: if s.vsync {
+            PresentMode::AutoVsync
+        } else {
+            PresentMode::AutoNoVsync
+        },
+        ..default()
+    }
+}
+
+/// 音量（0..=100）
+fn volume_of(v: i32) -> Volume {
+    Volume::Linear(v as f32 / 100.0)
+}
+
+/// 「開始」（LR2 のランチャーが本体を起動するところ）: 保存した設定から曲一覧・記録・スキンを用意し、画面と音量を合わせる
+pub fn start(world: &mut World) {
+    let s = world.resource::<SettingsRes>().saved.clone();
+    let launch = world.resource::<Launch>();
+    let (data_dir, direct, rebuild) = (launch.data_dir.clone(), launch.direct, launch.rebuild);
+    let options = PlayOptions {
+        auto: launch.auto,
+        ..s.options
+    };
+    let fs = platform::file_system();
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = platform::score_importers();
+    let scores = ScoreDb(platform::open_scores(&data_dir).map(Mutex::new));
+    let table_feed = select_scene::TableFeed::default();
+    let (library, feed, query) = if direct {
+        (Library::default(), None, None)
+    } else {
+        let (lib, feed) =
+            platform::library(&data_dir, &s.songs, fs.clone(), chart_loaders, rebuild);
+        eprintln!("譜面 {} 件", lib.songs().len());
+        // 難易度表: 手元のものですぐ出し、手元に無いものは別のスレッドで取ってくる（beatoraja の起動時と同じ）
+        let lib = match platform::table_source(&data_dir) {
+            Some(src) => {
+                let cached = application::tables::cached(src.as_ref(), &s.tables);
+                let urls = s.tables.clone();
+                let out = table_feed.0.clone();
+                std::thread::spawn(move || {
+                    if application::tables::fetch_missing(src.as_ref(), &urls) {
+                        let t = application::tables::cached(src.as_ref(), &urls);
+                        *out.lock().unwrap_or_else(|e| e.into_inner()) = Some(t);
+                    }
+                });
+                lib.with_tables(cached)
+            }
+            None => lib,
+        };
+        (lib, feed, platform::song_query(&data_dir))
+    };
+    let skin_root = s
+        .skin_root
+        .clone()
+        .unwrap_or_else(platform::default_skin_root);
+    // config.json に無いスキンは LR2 本体の設定で選んでいるもの（LR2 と同じ）
+    let lr2 = lr2_skins(fs.as_ref(), &skin_root);
+    let play_skin = pick_skin(&s, &s.skin, &lr2, "play_7");
+    let boot = Boot {
+        fs,
+        gauge: s.gauge,
+        options,
+        skin_path: play_skin.as_ref().map(|(p, _)| p.clone()),
+        skin_custom: play_skin.map(|(_, c)| c).unwrap_or_default(),
+        skin_root,
+        direct,
+    };
+    let option_names = option_names(boot.fs.as_ref(), &boot.skin_root);
+    // 選曲スキン（読めなければ文字の一覧）
+    let select_skin = match (pick_skin(&s, &s.select_skin, &lr2, "select"), direct) {
+        (Some((p, custom)), false) => load_skin(
+            &boot.fs,
+            &p,
+            boot.skin_root.clone(),
+            &[SceneKind::Select],
+            &custom,
+        )
+        .map_err(|e| eprintln!("選曲スキンを読めないので文字の一覧で出す: {e}"))
+        .ok(),
+        _ => None,
+    };
+    // キー設定スキン（選曲スキンの BUTTON 13 から入る。無い・読めなければ BUTTON 13 は何もしない）
+    let keyconfig_skin = match (
+        pick_skin(&s, &s.keyconfig_skin, &lr2, "keyconfig"),
+        &select_skin,
+    ) {
+        (Some((p, custom)), Some(_)) => load_skin(
+            &boot.fs,
+            &p,
+            boot.skin_root.clone(),
+            &[SceneKind::KeyConfig],
+            &custom,
+        )
+        .map_err(|e| eprintln!("キー設定スキンを読めない: {e}"))
+        .ok(),
+        _ => None,
+    };
+    // リザルトスキン（無い・読めなければ結果を文字で出す）
+    let result_skin = pick_skin(&s, &s.result_skin, &lr2, "result").and_then(|(p, custom)| {
+        load_skin(
+            &boot.fs,
+            &p,
+            boot.skin_root.clone(),
+            &[SceneKind::Result],
+            &custom,
+        )
+        .map_err(|e| eprintln!("リザルトスキンを読めないので結果を文字で出す: {e}"))
+        .ok()
+    });
+    world.insert_resource(select_scene::Selection::new(
+        library,
+        select_skin,
+        s.select,
+        option_names,
+        query,
+    ));
+    world.insert_resource(boot);
+    world.insert_resource(scores);
+    world.insert_resource(input::InputMap::new(s.bindings.clone()));
+    world.insert_resource(select_scene::LibraryFeed(feed));
+    world.insert_resource(table_feed);
+    world.insert_resource(GlobalVolume::new(volume_of(s.volume)));
+    match keyconfig_skin {
+        Some((skin, pixels)) => {
+            world.insert_resource(keyconfig_scene::KeyConfigScreen::new(skin, pixels))
+        }
+        None => world
+            .remove_resource::<keyconfig_scene::KeyConfigScreen>()
+            .map_or((), |_| ()),
+    }
+    match result_skin {
+        Some((skin, pixels)) => {
+            world.insert_resource(result_scene::ResultScreen::new(skin, pixels))
+        }
+        None => world
+            .remove_resource::<result_scene::ResultScreen>()
+            .map_or((), |_| ()),
+    }
+    // 画面の設定（ランチャーで替えたもの）
+    let w = window(&s.screen);
+    if let Ok(mut win) = world.query::<&mut Window>().single_mut(world) {
+        win.mode = w.mode;
+        win.present_mode = w.present_mode;
+        if !cfg!(target_arch = "wasm32") {
+            win.resolution
+                .set(s.screen.width as f32, s.screen.height as f32);
+        }
+    }
 }
 
 /// 譜面とスキンを読み込んでプレイを始める。読めなければ選曲に戻る（直接起動なら終了）
