@@ -14,6 +14,7 @@
 //! | SNG-06 | カスタムフォルダの行（LR2 `SearchSongsFromPath`・`GetFolderDataFromPath` の `INSERT`）: `path` は `.lr2folder` のパス（区切りを付けない）、`parent` は SNG-02 と同じ、`type` は種類（2 など）、`title`・`category`・`info_a`・`info_b`・`command`・`max`・`banner`・`date`・`adddate`。`type` が 1 でない行はカスタムフォルダとして読み戻す |
 //! | SNG-07 | SQL で引く（カスタムフォルダ）: `SELECT * FROM song …` の 8 列目（`path`）を引いた順に返す。`score` は自分の記録（`score.db` の LR2 のルールの行）を LR2 の `score` と同じ列にした一時的なビュー（`clear` は LR2 のランプの番号、`totalnotes` は `song.karinotes`、`rate` = EX × 100 / (総ノーツ × 2)、`rank` = EX × 9 / (総ノーツ × 2) を 8 までにし EX があれば 1 以上、`failcount` = プレイ回数 − クリア回数、ほかの LR2 の列は 0 か空）。記録の DB が無ければ空の `score`。SQL の誤りは `Parse` エラー |
 //! | SNG-08 | `.lr2folder` の文字は Shift_JIS として読む |
+//! | SNG-09 | 読むだけの接続（曲サーバー。reprise の拡張）: SQL が 1 文の読むだけの文（`sqlite3_stmt_readonly`）でなければ引かずに `Parse` エラー。文がいくつもあっても `Parse` エラー |
 use application::library::{FolderEntry, SongEntry};
 use application::ports::{PortError, SongDb, SongQuery};
 use domain::chart::{ChartHash, KeyMode};
@@ -423,6 +424,8 @@ ghost TEXT, clear_sd INTEGER, clear_ex INTEGER, op_best INTEGER, rseed INTEGER, 
 /// カスタムフォルダの SQL を引く接続（`SongQuery` の実装。SNG-07）
 pub struct SqliteSongQuery {
     db: std::sync::Mutex<Connection>,
+    /// 読むだけの SQL しか引かない（SNG-09）
+    read_only: bool,
 }
 
 impl SqliteSongQuery {
@@ -444,6 +447,14 @@ impl SqliteSongQuery {
             .map_err(io)?;
         Ok(Self {
             db: std::sync::Mutex::new(db),
+            read_only: false,
+        })
+    }
+    /// 読むだけの SQL しか引かない接続（SNG-09。曲サーバーがほかの機械から届いた SQL を引くとき）
+    pub fn open_read_only(song_db: &Path, score_db: &Path) -> Result<Self, PortError> {
+        Ok(Self {
+            read_only: true,
+            ..Self::open(song_db, score_db)?
         })
     }
 }
@@ -453,6 +464,9 @@ impl SongQuery for SqliteSongQuery {
         let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
         let parse = |e: rusqlite::Error| PortError::Parse(e.to_string());
         let mut st = db.prepare(sql).map_err(parse)?;
+        if self.read_only && !st.readonly() {
+            return Err(PortError::Parse("読むだけの SQL ではない".into()));
+        }
         let rows = st
             .query_map([], |r| r.get::<_, Option<String>>(7))
             .map_err(parse)?;
