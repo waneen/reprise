@@ -11,10 +11,13 @@
 //! | SNG-03 | 譜面の行: `hash` は MD5 の 16 進（小文字）、`folder` は譜面のフォルダ・`parent` はその親の CRC、`mode` は鍵盤数（5/7/9/10/14）、`karinotes` は総ノーツ数、`type`・`favorite`・`random`・`exlevel` は 0、`tag` は NULL。SHA-256 は `reprise_song`。同じパスは置き換え、読み戻すと同じ |
 //! | SNG-04 | LR2 の `AssignCRC32`: 文字列を Shift_JIS にし、末尾の NUL まで符号付きの char として CRC32（多項式 0xEDB88320）を取り、16 進（小文字・0 埋め無し）にする |
 //! | SNG-05 | 消す・日時の書き換え・難易度の書き換え・すべて消す（`folder`・`song`・`reprise_song`）はパスで行に効く |
+//! | SNG-06 | カスタムフォルダの行（LR2 `SearchSongsFromPath`・`GetFolderDataFromPath` の `INSERT`）: `path` は `.lr2folder` のパス（区切りを付けない）、`parent` は SNG-02 と同じ、`type` は種類（2 など）、`title`・`category`・`info_a`・`info_b`・`command`・`max`・`banner`・`date`・`adddate`。`type` が 1 でない行はカスタムフォルダとして読み戻す |
+//! | SNG-07 | SQL で引く（カスタムフォルダ）: `SELECT * FROM song …` の 8 列目（`path`）を引いた順に返す。`score` は自分の記録（`score.db` の LR2 のルールの行）を LR2 の `score` と同じ列にした一時的なビュー（`clear` は LR2 のランプの番号、`totalnotes` は `song.karinotes`、`rate` = EX × 100 / (総ノーツ × 2)、`rank` = EX × 9 / (総ノーツ × 2) を 8 までにし EX があれば 1 以上、`failcount` = プレイ回数 − クリア回数、ほかの LR2 の列は 0 か空）。記録の DB が無ければ空の `score`。SQL の誤りは `Parse` エラー |
+//! | SNG-08 | `.lr2folder` の文字は Shift_JIS として読む |
 use application::library::{FolderEntry, SongEntry};
-use application::ports::{PortError, SongDb};
+use application::ports::{PortError, SongDb, SongQuery};
 use domain::chart::{ChartHash, KeyMode};
-use domain::select::SongInfo;
+use domain::select::{CustomFolder, SongInfo};
 use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 
@@ -86,6 +89,11 @@ pub fn folder_text(p: &Path) -> String {
 fn folder_path(s: &str) -> PathBuf {
     let t = s.trim_end_matches(['/', MAIN_SEPARATOR]);
     PathBuf::from(if t.is_empty() { s } else { t })
+}
+
+/// SNG-08: Shift_JIS の文字列を読む（`.lr2folder`）
+pub fn shift_jis(bytes: &[u8]) -> String {
+    encoding_rs::SHIFT_JIS.decode(bytes).0.into_owned()
 }
 
 /// フォルダの CRC（登録したフォルダの子は登録したフォルダのパスの CRC）
@@ -183,15 +191,39 @@ impl SongDb for SqliteSongDb {
         let root = lr2_crc32("ROOT");
         let mut st = self
             .db
-            .prepare("SELECT path, title, parent, date FROM folder ORDER BY path")
+            .prepare(
+                "SELECT path, title, parent, date, type, category, info_a, info_b, command, max, banner FROM folder ORDER BY path",
+            )
             .map_err(io)?;
         let rows = st
             .query_map([], |r| {
+                let text = |i: usize| -> rusqlite::Result<String> {
+                    Ok(r.get::<_, Option<String>>(i)?.unwrap_or_default())
+                };
+                let kind = r.get::<_, Option<i64>>(4)?.unwrap_or(TYPE_FOLDER);
+                let path = folder_path(&r.get::<_, String>(0)?);
+                let title = text(1)?;
+                let custom = (kind != TYPE_FOLDER)
+                    .then(|| -> rusqlite::Result<CustomFolder> {
+                        Ok(CustomFolder {
+                            path: path.clone(),
+                            title: title.clone(),
+                            category: text(5)?,
+                            info_a: text(6)?,
+                            info_b: text(7)?,
+                            command: text(8)?,
+                            max: r.get::<_, Option<i64>>(9)?.unwrap_or(0) as i32,
+                            kind: kind as i32,
+                        })
+                    })
+                    .transpose()?;
                 Ok(FolderEntry {
-                    path: folder_path(&r.get::<_, String>(0)?),
-                    title: r.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    path,
+                    title,
                     root: r.get::<_, Option<String>>(2)?.as_deref() == Some(root.as_str()),
                     date: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+                    custom,
+                    banner: text(10)?,
                 })
             })
             .map_err(io)?;
@@ -234,12 +266,30 @@ impl SongDb for SqliteSongDb {
             folder_crc(f.path.parent().unwrap_or(Path::new("")))
         };
         // LR2 は主キーが重なると INSERT に失敗して何もしない
-        let n = self
-            .db
-            .execute(
+        let n = match &f.custom {
+            None => self.db.execute(
                 "INSERT OR IGNORE INTO folder (path, title, parent, date, type, adddate) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 params![folder_text(&f.path), f.title, parent, f.date, TYPE_FOLDER, now],
-            )
+            ),
+            Some(c) => self.db.execute(
+                "INSERT OR IGNORE INTO folder (path, title, parent, category, info_a, info_b, command, max, date, type, banner, adddate) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    f.path.to_string_lossy(),
+                    f.title,
+                    parent,
+                    c.category,
+                    c.info_a,
+                    c.info_b,
+                    c.command,
+                    c.max,
+                    f.date,
+                    c.kind,
+                    f.banner,
+                    now
+                ],
+            ),
+        }
             .map_err(io)?;
         Ok(n > 0)
     }
@@ -257,8 +307,8 @@ impl SongDb for SqliteSongDb {
     fn delete_folder(&mut self, path: &Path) -> Result<(), PortError> {
         self.db
             .execute(
-                "DELETE FROM folder WHERE path = ?1",
-                params![folder_text(path)],
+                "DELETE FROM folder WHERE path = ?1 OR path = ?2",
+                params![folder_text(path), path.to_string_lossy()],
             )
             .map(|_| ())
             .map_err(io)
@@ -348,6 +398,71 @@ VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,0,?17,?18,?19,?20
 
     fn commit(&mut self) -> Result<(), PortError> {
         self.db.execute_batch("COMMIT").map_err(io)
+    }
+}
+
+/// SNG-07: LR2 の `score` テーブルの列にした自分の記録（`score.db` の `score` の LR2 のルールの行）
+const SCORE_VIEW: &str = "CREATE TEMP VIEW score AS SELECT \
+sc.md5 AS hash, \
+CASE sc.lamp WHEN 1 THEN 1 WHEN 4 THEN 2 WHEN 5 THEN 3 WHEN 6 THEN 4 WHEN 8 THEN 5 ELSE 0 END AS clear, \
+sc.pgreat AS perfect, sc.great AS great, sc.good AS good, sc.bad AS bad, sc.poor AS poor, \
+t.n AS totalnotes, sc.maxcombo AS maxcombo, sc.minbp AS minbp, \
+sc.playcount AS playcount, sc.clearcount AS clearcount, sc.playcount - sc.clearcount AS failcount, \
+CASE WHEN t.n > 0 THEN MIN(8, MAX(CASE WHEN sc.pgreat * 2 + sc.great > 0 THEN 1 ELSE 0 END, (sc.pgreat * 2 + sc.great) * 9 / (t.n * 2))) ELSE 0 END AS rank, \
+CASE WHEN t.n > 0 THEN (sc.pgreat * 2 + sc.great) * 100 / (t.n * 2) ELSE 0 END AS rate, \
+0 AS clear_db, 0 AS op_history, '' AS scorehash, '' AS ghost, 0 AS clear_sd, 0 AS clear_ex, 0 AS op_best, 0 AS rseed, 0 AS complete \
+FROM scoredb.score sc LEFT JOIN (SELECT hash, MAX(karinotes) AS n FROM main.song GROUP BY hash) t ON t.hash = sc.md5 \
+WHERE sc.ruleset = 0";
+
+/// 記録の DB が無いときの空の `score`
+const EMPTY_SCORE: &str = "CREATE TEMP TABLE score(hash TEXT primary key, clear INTEGER, perfect INTEGER, great INTEGER, \
+good INTEGER, bad INTEGER, poor INTEGER, totalnotes INTEGER, maxcombo INTEGER, minbp INTEGER, playcount INTEGER, \
+clearcount INTEGER, failcount INTEGER, rank INTEGER, rate INTEGER, clear_db INTEGER, op_history INTEGER, scorehash TEXT, \
+ghost TEXT, clear_sd INTEGER, clear_ex INTEGER, op_best INTEGER, rseed INTEGER, complete INTEGER)";
+
+/// カスタムフォルダの SQL を引く接続（`SongQuery` の実装。SNG-07）
+pub struct SqliteSongQuery {
+    db: std::sync::Mutex<Connection>,
+}
+
+impl SqliteSongQuery {
+    /// 曲の DB を開き、記録の DB（`score.db`）があれば `scoredb` として付ける
+    pub fn open(song_db: &Path, score_db: &Path) -> Result<Self, PortError> {
+        let db = SqliteSongDb::open(song_db)?.db;
+        let attached = score_db.is_file()
+            && db
+                .execute("ATTACH DATABASE ?1 AS scoredb", params![score_db.to_string_lossy()])
+                .is_ok()
+            && db
+                .query_row(
+                    "SELECT count(*) FROM scoredb.sqlite_master WHERE type = 'table' AND name = 'score'",
+                    [],
+                    |r| r.get::<_, i64>(0),
+                )
+                .is_ok_and(|n| n > 0);
+        db.execute_batch(if attached { SCORE_VIEW } else { EMPTY_SCORE })
+            .map_err(io)?;
+        Ok(Self {
+            db: std::sync::Mutex::new(db),
+        })
+    }
+}
+
+impl SongQuery for SqliteSongQuery {
+    fn song_paths(&self, sql: &str) -> Result<Vec<PathBuf>, PortError> {
+        let db = self.db.lock().unwrap_or_else(|e| e.into_inner());
+        let parse = |e: rusqlite::Error| PortError::Parse(e.to_string());
+        let mut st = db.prepare(sql).map_err(parse)?;
+        let rows = st
+            .query_map([], |r| r.get::<_, Option<String>>(7))
+            .map_err(parse)?;
+        let mut out = vec![];
+        for r in rows {
+            if let Some(p) = r.map_err(parse)? {
+                out.push(PathBuf::from(p));
+            }
+        }
+        Ok(out)
     }
 }
 
