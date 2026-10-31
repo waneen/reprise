@@ -242,3 +242,55 @@ fn sjs_11_tables(#[case] text: &str, #[case] want: Option<Vec<&str>>) {
     let got = from_json(&v).ok().map(|s| s.tables);
     assert_eq!(got, want.map(|w| w.iter().map(|s| s.to_string()).collect()));
 }
+
+/// SJS-12: 画面
+#[rstest]
+#[case::missing("{}", Some((ScreenMode::Window, 1280, 720, false)))]
+#[case::given(r#"{"screen_mode": "fullscreen", "window_width": 1920, "window_height": 1080, "vsync": true}"#, Some((ScreenMode::Fullscreen, 1920, 1080, true)))]
+#[case::clamped(r#"{"window_width": 1, "window_height": 99999}"#, Some((ScreenMode::Window, 320, 4320, false)))]
+#[case::unknown_mode(r#"{"screen_mode": "borderless"}"#, None)]
+#[case::not_number(r#"{"window_width": "x"}"#, None)]
+fn sjs_12_screen(#[case] text: &str, #[case] want: Option<(ScreenMode, u32, u32, bool)>) {
+    let v: Value = serde_json::from_str(text).unwrap();
+    let got = from_json(&v).ok().map(|s| {
+        (
+            s.screen.mode,
+            s.screen.width,
+            s.screen.height,
+            s.screen.vsync,
+        )
+    });
+    assert_eq!(got, want);
+    if let Ok(s) = from_json(&v) {
+        assert_eq!(from_json(&to_json(&s)).unwrap().screen, s.screen);
+    }
+}
+
+/// SJS-13: 音量
+#[rstest]
+#[case::missing("{}", Some(100))]
+#[case::given(r#"{"volume": 40}"#, Some(40))]
+#[case::clamped(r#"{"volume": 300}"#, Some(100))]
+#[case::not_number(r#"{"volume": true}"#, None)]
+fn sjs_13_volume(#[case] text: &str, #[case] want: Option<i32>) {
+    let v: Value = serde_json::from_str(text).unwrap();
+    assert_eq!(from_json(&v).ok().map(|s| s.volume), want);
+}
+
+/// SJS-14: 曲サーバー
+#[rstest]
+#[case::missing("{}", Some(("", "")))]
+#[case::given(r#"{"server_url": "http://pc:8770", "server_token": "abc"}"#, Some(("http://pc:8770", "abc")))]
+#[case::not_string(r#"{"server_url": 1}"#, None)]
+fn sjs_14_server(#[case] text: &str, #[case] want: Option<(&str, &str)>) {
+    let v: Value = serde_json::from_str(text).unwrap();
+    let got = from_json(&v).ok().map(|s| s.server);
+    let want = want.map(|(u, t)| application::settings::ServerAddress {
+        url: u.into(),
+        token: t.into(),
+    });
+    assert_eq!(got, want);
+    if let Ok(s) = from_json(&v) {
+        assert_eq!(from_json(&to_json(&s)).unwrap().server, s.server);
+    }
+}

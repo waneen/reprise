@@ -4,12 +4,14 @@
 //! ブラウザ版は、ページの JavaScript が選ばれたファイルを `globalThis.repriseFiles`（パス → `Uint8Array` の `Map`）に、
 //! 起動引数（`--songs` と `--skin-root`）を `globalThis.repriseArgs`（文字列の配列）に置いてから起動する（`web/index.html`）。
 //! 設定はネイティブと同じ `config.json` の中身を、ブラウザ版はページの保存領域（`localStorage`）に置く。
-//! ブラウザ版は曲サーバー（`reprise-server`）にもつなげる: ページが `globalThis.repriseServer`（`{ url, token }`）と
-//! `globalThis.repriseHttp(method, target, body)`（同期の HTTP。`{ status, body: Uint8Array }` を返す）を置いて起動すると、
-//! ファイル・曲一覧・記録・カスタムフォルダの SQL をサーバーに頼む（`remote` クレートのポートの実装。ネイティブ版と同じ画面）。
+//! ブラウザ版は曲サーバー（`reprise-server`）にもつなげる: ランチャーで URL と合言葉を入れて「開始」すると（[`connect`]）
+//! `globalThis.repriseServer`（`{ url, token }`）を置き、ページの `globalThis.repriseHttp(method, target, body)`
+//! （同期の HTTP。`{ status, body: Uint8Array }` を返す）でファイル・曲一覧・記録・カスタムフォルダの SQL をサーバーに頼む
+//! （`remote` クレートのポートの実装。ネイティブ版と同じ画面）。
 use application::ports::{
     ChartLoader, FileSystem, LibrarySource, ScoreRepository, SettingsStore, SongQuery, TableSource,
 };
+use application::settings::ServerAddress;
 use domain::select::Library;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -19,6 +21,20 @@ pub type Scores = Box<dyn ScoreRepository + Send>;
 /// 設定の保存先
 pub type Store = Box<dyn SettingsStore + Send + Sync>;
 
+/// 曲サーバーにつなげなかった（ネイティブ版はつながないので作らない）
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConnectError {
+    /// URL が `http://`・`https://` で始まらない
+    BadUrl,
+    /// 合言葉が違う（401）
+    WrongToken,
+    /// つながらない
+    Unreachable,
+    /// ほかの答え（HTTP の状態）
+    Status(u16),
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 mod imp {
     use super::*;
@@ -27,9 +43,54 @@ mod imp {
     pub fn args() -> Vec<String> {
         std::env::args().skip(1).collect()
     }
-    /// ネイティブ版は曲サーバーにつながない（同じポートをこの機械の中で使う）
-    pub fn has_server() -> bool {
-        false
+    /// ブラウザ版か（ネイティブ版は曲サーバーにつながず、同じポートをこの機械の中で使う）
+    pub const BROWSER: bool = false;
+    /// 曲サーバーにつなぐ（ネイティブ版はつながない）
+    pub fn connect(_server: &ServerAddress) -> Result<(), ConnectError> {
+        Ok(())
+    }
+    /// ページが渡した曲サーバー（ブラウザ版だけ）
+    pub fn server_hint() -> Option<ServerAddress> {
+        None
+    }
+    /// 難易度表をすべて取り直す（APP-TBL-03）。取れたものがあれば true
+    pub fn update_tables(data_dir: &Path, urls: &[String]) -> bool {
+        let src = bms_table::HttpTables::new(data_dir.join("table"));
+        application::tables::fetch_all(&src, urls)
+    }
+    /// ランチャーの日本語の字（OS のフォントから、よく入っている日本語のフォントを名前で探す。(中身, コレクションの中の番号)）
+    pub fn japanese_font() -> Option<(Vec<u8>, u32)> {
+        use fontique::{Collection, CollectionOptions};
+        const NAMES: [&str; 13] = [
+            "Yu Gothic UI",
+            "Yu Gothic",
+            "Meiryo UI",
+            "Meiryo",
+            "MS UI Gothic",
+            "Hiragino Sans",
+            "Hiragino Kaku Gothic ProN",
+            "Noto Sans CJK JP",
+            "Noto Sans JP",
+            "Source Han Sans JP",
+            "IPAexGothic",
+            "IPAGothic",
+            "VL Gothic",
+        ];
+        let mut c = Collection::new(CollectionOptions {
+            shared: false,
+            system_fonts: true,
+        });
+        NAMES.iter().find_map(|n| {
+            let id = c.family_id(n)?;
+            let f = c.family(id)?;
+            // 標準の太さに近いもの
+            let font = f
+                .fonts()
+                .iter()
+                .min_by_key(|f| (f.weight().value() - 400.0).abs() as i32)?;
+            let blob = font.load(None)?;
+            Some((blob.as_ref().to_vec(), font.index()))
+        })
     }
     pub fn file_system() -> Arc<dyn FileSystem> {
         Arc::new(file_system::StdFs)
@@ -37,12 +98,14 @@ mod imp {
     pub fn default_skin_root() -> PathBuf {
         std::env::current_dir().unwrap_or_default()
     }
-    /// 曲一覧: `song.db` の今の中身と、確かめ・見張りの届け先（DB を開けなければその場で読んだ一覧だけ）
+    /// 曲一覧: `song.db` の今の中身と、確かめ・見張りの届け先（DB を開けなければその場で読んだ一覧だけ）。
+    /// `rebuild` なら DB を作り直す（ランチャーで選んだとき）
     pub fn library(
         data_dir: &Path,
         roots: &[PathBuf],
         fs: Arc<dyn FileSystem>,
         loaders: fn() -> Vec<Box<dyn ChartLoader>>,
+        rebuild: bool,
     ) -> (Library, Option<Box<dyn LibrarySource>>) {
         match library_watch::LocalLibrary::start(
             data_dir.join("song.db"),
@@ -50,7 +113,12 @@ mod imp {
             fs.clone(),
             loaders,
         ) {
-            Ok((lib, source)) => (lib, Some(Box::new(source))),
+            Ok((lib, source)) => {
+                if rebuild {
+                    source.rebuild();
+                }
+                (lib, Some(Box::new(source)))
+            }
             Err(e) => {
                 eprintln!("曲の DB を開けないので、フォルダを読んだ一覧だけで出す: {e:?}");
                 let lib = application::usecase::scan_library(fs.as_ref(), &loaders(), roots);
@@ -150,15 +218,61 @@ mod imp {
         }
     }
 
-    /// 曲サーバー（ページが `repriseServer` を置いたときだけ）
+    /// 曲サーバー（`repriseServer` を置いたときだけ）
     fn remote() -> Option<Arc<Remote>> {
-        static REMOTE: OnceLock<Option<Arc<Remote>>> = OnceLock::new();
-        REMOTE
-            .get_or_init(|| {
-                let s = global("repriseServer");
-                (!s.is_undefined() && !s.is_null()).then(|| Remote::new(PageHttp))
-            })
-            .clone()
+        static REMOTE: OnceLock<Arc<Remote>> = OnceLock::new();
+        let s = global("repriseServer");
+        (!s.is_undefined() && !s.is_null())
+            .then(|| REMOTE.get_or_init(|| Remote::new(PageHttp)).clone())
+    }
+
+    fn set_global(name: &str, v: &JsValue) {
+        let _ = js_sys::Reflect::set(&js_sys::global(), &name.into(), v);
+    }
+
+    /// ブラウザ版か（ランチャーで譜面のフォルダの代わりに曲サーバーを選ぶ）
+    pub const BROWSER: bool = true;
+
+    /// 曲サーバーにつなぐ（URL が空ならつながない）。`GET /api/version` で確かめる
+    pub fn connect(server: &ServerAddress) -> Result<(), ConnectError> {
+        let url = match application::launcher::server_url(&server.url) {
+            Ok(Some(u)) => u,
+            Ok(None) => {
+                set_global("repriseServer", &JsValue::UNDEFINED);
+                return Ok(());
+            }
+            Err(_) => return Err(ConnectError::BadUrl),
+        };
+        let o = js_sys::Object::new();
+        let _ = js_sys::Reflect::set(&o, &"url".into(), &url.into());
+        let _ = js_sys::Reflect::set(&o, &"token".into(), &server.token.as_str().into());
+        set_global("repriseServer", &o);
+        let (status, _) = PageHttp.request("GET", "/api/version", None);
+        let err = match status {
+            200..=299 => return Ok(()),
+            0 => ConnectError::Unreachable,
+            401 => ConnectError::WrongToken,
+            s => ConnectError::Status(s),
+        };
+        set_global("repriseServer", &JsValue::UNDEFINED);
+        Err(err)
+    }
+    /// ページが渡した曲サーバー（`globalThis.repriseServerHint`。サーバーが配ったページの URL と `#token=`）
+    pub fn server_hint() -> Option<ServerAddress> {
+        let h = global("repriseServerHint");
+        let get = |k: &str| js_sys::Reflect::get(&h, &k.into()).ok()?.as_string();
+        (!h.is_undefined() && !h.is_null()).then(|| ServerAddress {
+            url: get("url").unwrap_or_default(),
+            token: get("token").unwrap_or_default(),
+        })
+    }
+    /// 難易度表をすべて取り直す（曲サーバーに頼む。`POST /api/tables/update`）
+    pub fn update_tables(_data_dir: &Path, _urls: &[String]) -> bool {
+        remote().is_some_and(|r| r.update_tables().is_ok())
+    }
+    /// ブラウザ版は OS のフォントを読めない（ランチャーは英語で出す）
+    pub fn japanese_font() -> Option<(Vec<u8>, u32)> {
+        None
     }
 
     pub fn args() -> Vec<String> {
@@ -166,10 +280,6 @@ mod imp {
             .dyn_into::<js_sys::Array>()
             .map(|a| a.iter().filter_map(|v| v.as_string()).collect())
             .unwrap_or_default()
-    }
-    /// 曲サーバーにつないだか（つないだら譜面のフォルダは要らない）
-    pub fn has_server() -> bool {
-        remote().is_some()
     }
     pub fn file_system() -> Arc<dyn FileSystem> {
         if let Some(r) = remote() {
@@ -197,6 +307,7 @@ mod imp {
         roots: &[PathBuf],
         fs: Arc<dyn FileSystem>,
         loaders: fn() -> Vec<Box<dyn ChartLoader>>,
+        _rebuild: bool,
     ) -> (Library, Option<Box<dyn LibrarySource>>) {
         if let Some(r) = remote() {
             return match r.library() {
