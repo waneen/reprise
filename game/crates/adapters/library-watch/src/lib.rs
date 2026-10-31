@@ -161,6 +161,7 @@ fn run(
         fs,
         loaders: &ls,
         now,
+        decode: song_db::shift_jis,
     };
     match library::update(&scan(now_s()), db, roots) {
         Ok(true) => publish(db, out),
