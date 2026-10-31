@@ -2,10 +2,11 @@
 //! 規則は OpenLR2 の `LR2_songmanage.cpp`（`LoadLR2CustomFolder` の起動時の確かめ・`GetFolderDataFromPath`・
 //! `SearchSongsFromPath`・`ReloadSongsByQuery`・`SetUndefinedDifficulty`）と、書き起こしの元の `LR2f.cpp` の同じ関数に合わせた。
 //! ファイルの見張りによる読み直し（[`apply`]）は reprise の拡張（LR2 は起動時と F8 などでしか確かめない）。
+use crate::custom_folder;
 use crate::ports::{ChartLoader, FileSystem, PortError, SongDb};
 use crate::usecase::load_chart;
 use domain::chart::{NoteKind, TimingEvent};
-use domain::select::{Library, SongInfo};
+use domain::select::{CustomFolder, Library, SongInfo};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
@@ -19,6 +20,10 @@ pub struct FolderEntry {
     pub root: bool,
     /// 更新日時（秒）
     pub date: i64,
+    /// カスタムフォルダ（`.lr2folder`）なら中身（LR2 の `type` 2 などの行）
+    pub custom: Option<CustomFolder>,
+    /// `#BANNER`（カスタムフォルダ）
+    pub banner: String,
 }
 
 /// 譜面の行（LR2 の `song` テーブル）
@@ -48,6 +53,8 @@ pub struct Scan<'a> {
     pub loaders: &'a [Box<dyn ChartLoader>],
     /// 今の時刻（秒。追加日時に書く）
     pub now: i64,
+    /// Shift_JIS の文字列を読む（LR2 は `.lr2folder` を Shift_JIS で読む）
+    pub decode: fn(&[u8]) -> String,
 }
 
 fn under_roots(path: &Path, roots: &[PathBuf]) -> bool {
@@ -120,6 +127,31 @@ pub fn read_song(scan: &Scan, path: &Path, date: i64) -> Option<SongEntry> {
     })
 }
 
+/// APP-LIB-08: `.lr2folder` を読んでフォルダの行にする（読めなければ None）
+fn read_custom(scan: &Scan, path: &Path, root: bool) -> Option<FolderEntry> {
+    let bytes = scan.fs.read(path).ok()?;
+    let p = custom_folder::parse(path, &(scan.decode)(&bytes));
+    let mut folder = p.folder;
+    if root {
+        folder.kind = custom_folder::root_kind(&folder.command);
+    }
+    Some(FolderEntry {
+        path: path.to_path_buf(),
+        title: folder.title.clone(),
+        root,
+        date: scan.fs.modified(path).unwrap_or(0),
+        custom: Some(folder),
+        banner: p.banner,
+    })
+}
+
+fn is_custom_file(fs: &dyn FileSystem, path: &Path) -> bool {
+    fs.is_file(path)
+        && path
+            .file_name()
+            .is_some_and(|n| custom_folder::is_lr2folder(&n.to_string_lossy()))
+}
+
 fn name_of(path: &Path) -> String {
     path.file_name()
         .map_or_else(|| path.to_string_lossy(), |n| n.to_string_lossy())
@@ -132,7 +164,12 @@ fn search(scan: &Scan, db: &mut dyn SongDb, dir: &Path) -> Result<bool, PortErro
     let mut dirs = vec![dir.to_path_buf()];
     while let Some(d) = dirs.pop() {
         for e in scan.fs.list(&d) {
-            if e.is_file {
+            if e.is_file && custom_folder::is_lr2folder(&e.name) {
+                // LR2 は見つけるたびに INSERT して、あれば失敗する
+                if let Some(folder) = read_custom(scan, &e.path, false) {
+                    changed |= db.insert_folder(&folder, scan.now)?;
+                }
+            } else if e.is_file {
                 if !scan.loaders.iter().any(|l| l.can_load(&e.path))
                     || db.song_date(&e.path)?.is_some()
                 {
@@ -149,6 +186,8 @@ fn search(scan: &Scan, db: &mut dyn SongDb, dir: &Path) -> Result<bool, PortErro
                     title: e.name,
                     root: false,
                     path: e.path.clone(),
+                    custom: None,
+                    banner: String::new(),
                 };
                 if db.insert_folder(&folder, scan.now)? {
                     changed = true;
@@ -172,13 +211,22 @@ fn check(
         if !pick(&f.path) {
             continue;
         }
+        let custom = f.custom.is_some();
         let now = under_roots(&f.path, roots)
             .then(|| scan.fs.modified(&f.path))
             .flatten()
-            .filter(|_| !scan.fs.is_file(&f.path));
+            .filter(|_| scan.fs.is_file(&f.path) == custom);
         match now {
             None => {
                 db.delete_folder(&f.path)?;
+                changed = true;
+            }
+            Some(m) if f.date < m && custom => {
+                // カスタムフォルダは読み直して置き換える（LR2 は DELETE して INSERT する）
+                db.delete_folder(&f.path)?;
+                if let Some(folder) = read_custom(scan, &f.path, f.root) {
+                    db.insert_folder(&folder, scan.now)?;
+                }
                 changed = true;
             }
             Some(m) if f.date < m => {
@@ -220,6 +268,13 @@ fn check(
 fn add_roots(scan: &Scan, db: &mut dyn SongDb, roots: &[PathBuf]) -> Result<bool, PortError> {
     let mut changed = false;
     for r in roots {
+        if is_custom_file(scan.fs, r) {
+            // 登録したフォルダが .lr2folder なら最初の一覧に出す（中は探さない）
+            if let Some(folder) = read_custom(scan, r, true) {
+                changed |= db.insert_folder(&folder, scan.now)?;
+            }
+            continue;
+        }
         if !is_dir(scan.fs, r) {
             continue;
         }
@@ -228,6 +283,8 @@ fn add_roots(scan: &Scan, db: &mut dyn SongDb, roots: &[PathBuf]) -> Result<bool
             title: name_of(r),
             root: true,
             date: scan.fs.modified(r).unwrap_or(0),
+            custom: None,
+            banner: String::new(),
         };
         if db.insert_folder(&folder, scan.now)? {
             search(scan, db, r)?;
@@ -327,15 +384,22 @@ pub fn apply(
     Ok(changed)
 }
 
-/// APP-LIB-06: DB から曲一覧を作る（最初の一覧は登録したフォルダの行）
+/// APP-LIB-06: DB から曲一覧を作る（最初の一覧は登録したフォルダの行。カスタムフォルダの行はカスタムフォルダ）
 pub fn load(db: &dyn SongDb) -> Result<Library, PortError> {
+    let rows = db.folders()?;
+    let custom: Vec<CustomFolder> = rows.iter().filter_map(|f| f.custom.clone()).collect();
     let (roots, folders): (Vec<FolderEntry>, Vec<FolderEntry>) =
-        db.folders()?.into_iter().partition(|f| f.root);
+        rows.into_iter().partition(|f| f.root);
     Ok(Library::new(
         roots.into_iter().map(|f| f.path).collect(),
-        folders.into_iter().map(|f| f.path).collect(),
+        folders
+            .into_iter()
+            .filter(|f| f.custom.is_none())
+            .map(|f| f.path)
+            .collect(),
         db.songs()?.into_iter().map(|s| s.info).collect(),
-    ))
+    )
+    .with_custom(custom))
 }
 
 #[cfg(test)]

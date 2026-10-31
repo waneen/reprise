@@ -93,6 +93,21 @@ pub trait SongDb: Send {
     }
 }
 
+/// 曲の DB を SQL で引く（カスタムフォルダ。SQL の組み立ては [`crate::custom_folder`]）
+pub trait SongQuery: Send + Sync {
+    /// `SELECT * FROM song LEFT JOIN score …` の行の `song.path`（引いた順）。`score` は自分の記録（LR2 のルール）を
+    /// LR2 の `score` テーブルと同じ列にしたもの
+    fn song_paths(&self, sql: &str) -> Result<Vec<PathBuf>, PortError>;
+}
+
+/// 難易度表（beatoraja の難易度表。reprise の拡張）
+pub trait TableSource: Send + Sync {
+    /// 手元に保存した表（無ければ None）
+    fn cached(&self, url: &str) -> Option<domain::select::DifficultyTable>;
+    /// 表を取ってきて手元に保存する
+    fn fetch(&self, url: &str) -> Result<domain::select::DifficultyTable, PortError>;
+}
+
 /// 曲一覧の届け先（ネイティブ版は曲の DB とフォルダの見張り）
 pub trait LibrarySource: Send + Sync {
     /// 前に呼んでから新しい曲一覧ができていれば、いちばん新しいものを返す

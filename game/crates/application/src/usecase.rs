@@ -428,7 +428,7 @@ mod tests {
             ..Default::default()
         };
         let bars = lib
-            .open(Path::new(open), &mut all, &|_| Default::default())
+            .open(Path::new(open), &mut all, &domain::select::NoLookup)
             .unwrap()
             .bars;
         let got: Vec<String> = bars
@@ -444,6 +444,7 @@ mod tests {
                     // Windows では join した部分が \ 区切りになる
                     s.path.to_string_lossy().replace('\\', "/")
                 }
+                other => format!("{other:?}"),
             })
             .collect();
         assert_eq!(got, want);

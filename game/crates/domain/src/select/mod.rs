@@ -2,11 +2,14 @@
 //! 譜面の走査は外側（application）で行い、ここには結果だけが入る。
 pub mod filter;
 pub mod preview;
+pub mod table;
 
 use crate::chart::{ChartHash, KeyMode};
 pub use filter::{FilterKind, Group, ListFilter, SortRecord};
 pub use preview::{Panel, PanelChange, Preview, PreviewAction};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+pub use table::{DifficultyTable, TableChart, TableLevel};
 
 /// 選曲に出す譜面の情報
 #[derive(Debug, Clone, PartialEq)]
@@ -26,12 +29,81 @@ pub struct SongInfo {
     pub notes: u32,
 }
 
-/// 譜面の置き場所（登録したフォルダ・その中のすべてのフォルダ・譜面）
+/// カスタムフォルダ（LR2 の `.lr2folder`。song.db の `folder` の `type` 2 の行）
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CustomFolder {
+    /// `.lr2folder` のパス
+    pub path: PathBuf,
+    /// `#TITLE`
+    pub title: String,
+    /// `#GENRE`・`#CATEGORY`（LR2 の `category`）
+    pub category: String,
+    /// `#ARTIST`・`#INFORMATION_A`（LR2 の `info_a`）
+    pub info_a: String,
+    /// `#SUBARTIST`・`#INFORMATION_B`（LR2 の `info_b`）
+    pub info_b: String,
+    /// `#TAG`・`#COMMAND`（SQL の `WHERE` の後ろ。LR2 の `command`）
+    pub command: String,
+    /// `#PLAYLEVEL`・`#MAXTRACKS`（出す譜面の数の上限。1 なら無作為に選ぶ。LR2 の `max`）
+    pub max: i32,
+    /// LR2 の `folder` の `type`（2 カスタムフォルダ・3 新着（登録したフォルダの `__NEWSONG__`）など。バーの種類）
+    pub kind: i32,
+}
+
+impl CustomFolder {
+    /// 開くと SQL で譜面を引くか（LR2: `tag` が 3 バイト以上で `(null)` でない）
+    pub fn has_command(&self) -> bool {
+        self.command.len() > 2 && self.command != "(null)"
+    }
+}
+
+/// カスタムフォルダの SQL で引いた譜面
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CustomResult {
+    /// 引いた順の譜面のパス
+    pub paths: Vec<PathBuf>,
+    /// 並びが決まっている（`ORDER BY` を書いた・無作為に選んだ）。絞り込み・並べ替えをしない
+    pub ordered: bool,
+}
+
+/// 一覧を作るときに引くもの（記録とカスタムフォルダの SQL）
+pub trait Lookup {
+    /// 並べ替えに使う記録
+    fn record(&self, hash: &ChartHash) -> SortRecord;
+    /// カスタムフォルダの SQL の結果（引けなければ None）
+    fn custom(&self, _folder: &CustomFolder) -> Option<CustomResult> {
+        None
+    }
+}
+
+/// 記録もカスタムフォルダの SQL も引かない
+pub struct NoLookup;
+
+impl Lookup for NoLookup {
+    fn record(&self, _: &ChartHash) -> SortRecord {
+        SortRecord::default()
+    }
+}
+
+impl<F: Fn(&ChartHash) -> SortRecord> Lookup for F {
+    fn record(&self, hash: &ChartHash) -> SortRecord {
+        self(hash)
+    }
+}
+
+/// 譜面の置き場所（登録したフォルダ・その中のすべてのフォルダ・譜面・カスタムフォルダ・難易度表）
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Library {
     roots: Vec<PathBuf>,
     folders: Vec<PathBuf>,
     songs: Vec<SongInfo>,
+    custom: Vec<CustomFolder>,
+    tables: Vec<DifficultyTable>,
+    /// 譜面のパス → 添字
+    by_path: HashMap<PathBuf, usize>,
+    /// MD5・SHA-256（小文字の 16 進）→ 最初の譜面の添字
+    by_md5: HashMap<String, usize>,
+    by_sha256: HashMap<String, usize>,
 }
 
 /// 一覧の 1 行
@@ -43,6 +115,14 @@ pub enum Bar {
     },
     /// `Library::songs` の添字
     Song(usize),
+    /// カスタムフォルダ（`Library::custom` の添字）
+    Custom(usize),
+    /// 難易度表（`Library::tables` の添字。reprise の拡張）
+    Table(usize),
+    /// 難易度表のレベル（表・レベルの添字）
+    Level(usize, usize),
+    /// 難易度表にあって曲の一覧に無い譜面（表・レベル・何番目）
+    Missing(usize, usize, usize),
 }
 
 /// LR2 の文字列比較（大文字にしてバイト順）
@@ -60,62 +140,224 @@ fn folder_bar(path: &Path) -> Bar {
     }
 }
 
-/// フォルダをパスの大文字比較順に並べる（LR2 の `CMP_SongDataByPath`）
-fn folder_bars<'a>(paths: impl Iterator<Item = &'a PathBuf>) -> Vec<Bar> {
-    let mut v: Vec<&PathBuf> = paths.collect();
-    v.sort_by_key(|p| upper(p));
-    v.dedup();
-    v.into_iter().map(|p| folder_bar(p)).collect()
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
+
+/// 難易度表とそのレベルを一覧の段として開き直すためのパス（ファイルのパスにならない）
+const TABLE_KEY: &str = "\0table\0";
 
 impl Library {
     /// `folders` は登録したフォルダの中にあるすべてのフォルダ（登録したフォルダ自身は含めなくてよい）。
     /// `#DIFFICULTY` の無い譜面には難易度を付ける（DOM-SEL-17）
     pub fn new(roots: Vec<PathBuf>, folders: Vec<PathBuf>, mut songs: Vec<SongInfo>) -> Self {
         filter::assign_undefined_difficulty(&mut songs);
+        let mut by_path = HashMap::new();
+        let mut by_md5 = HashMap::new();
+        let mut by_sha256 = HashMap::new();
+        for (i, s) in songs.iter().enumerate() {
+            by_path.entry(s.path.clone()).or_insert(i);
+            by_md5.entry(hex(&s.hash.md5)).or_insert(i);
+            if let Some(sha) = &s.hash.sha256 {
+                by_sha256.entry(hex(sha)).or_insert(i);
+            }
+        }
         Self {
             roots,
             folders,
             songs,
+            custom: vec![],
+            tables: vec![],
+            by_path,
+            by_md5,
+            by_sha256,
         }
+    }
+    /// カスタムフォルダ（登録したフォルダが `.lr2folder` なら最初の一覧に、それ以外は置いてあるフォルダの一覧に出る）
+    pub fn with_custom(mut self, custom: Vec<CustomFolder>) -> Self {
+        self.custom = custom;
+        self
+    }
+    /// 難易度表（最初の一覧の最後にこの順で出る。reprise の拡張）
+    pub fn with_tables(mut self, tables: Vec<DifficultyTable>) -> Self {
+        self.tables = tables;
+        self
     }
     pub fn songs(&self) -> &[SongInfo] {
         &self.songs
     }
-
-    /// 最初の一覧 = 登録したフォルダ（DOM-SEL-01）
-    pub fn root_bars(&self) -> Vec<Bar> {
-        folder_bars(self.roots.iter())
+    pub fn custom(&self) -> &[CustomFolder] {
+        &self.custom
+    }
+    pub fn tables(&self) -> &[DifficultyTable] {
+        &self.tables
     }
 
-    /// フォルダを開いた一覧（DOM-SEL-02, 03, 12..15）。開けなければ None。
-    /// 譜面は `filter` で絞り込んで並べ（絞り込みを先へ回したら `filter` を書き換える）、`record` は並べ替えに使う記録を引く
+    /// フォルダとカスタムフォルダをパスの大文字比較順に並べる（LR2 の `CMP_SongDataByPath`）
+    fn folder_bars<'a>(&self, paths: impl Iterator<Item = &'a PathBuf>) -> Vec<Bar> {
+        let mut v: Vec<&PathBuf> = paths.collect();
+        v.sort_by_key(|p| upper(p));
+        v.dedup();
+        v.into_iter()
+            .map(|p| match self.custom.iter().position(|c| &c.path == p) {
+                Some(c) => Bar::Custom(c),
+                None => folder_bar(p),
+            })
+            .collect()
+    }
+
+    /// 最初の一覧 = 登録したフォルダ（DOM-SEL-01, 23）と難易度表（DOM-SEL-25）
+    pub fn root_bars(&self) -> Vec<Bar> {
+        let mut bars = self.folder_bars(self.roots.iter());
+        bars.extend((0..self.tables.len()).map(Bar::Table));
+        bars
+    }
+
+    /// 譜面の添字（パスで引く）
+    pub fn song_by_path(&self, path: &Path) -> Option<usize> {
+        self.by_path.get(path).copied()
+    }
+
+    /// 難易度表の譜面に当たる曲（MD5、無ければ SHA-256 で引く。beatoraja の `SongBar.matches`）
+    pub fn table_song(&self, chart: &TableChart) -> Option<usize> {
+        let md5 = (!chart.md5.is_empty())
+            .then(|| self.by_md5.get(&chart.md5))
+            .flatten();
+        let sha = || {
+            (!chart.sha256.is_empty())
+                .then(|| self.by_sha256.get(&chart.sha256))
+                .flatten()
+        };
+        md5.or_else(sha).copied()
+    }
+
+    fn table_key(t: usize, level: Option<usize>) -> PathBuf {
+        match level {
+            None => PathBuf::from(format!("{TABLE_KEY}{t}")),
+            Some(l) => PathBuf::from(format!("{TABLE_KEY}{t}\0{l}")),
+        }
+    }
+
+    /// 難易度表・レベルを開き直すためのパス → (表, レベル)
+    fn parse_table_key(&self, p: &Path) -> Option<(usize, Option<usize>)> {
+        let rest = p.to_str()?.strip_prefix(TABLE_KEY)?;
+        let mut it = rest.split('\0');
+        let t: usize = it.next()?.parse().ok()?;
+        let l = match it.next() {
+            Some(x) => Some(x.parse().ok()?),
+            None => None,
+        };
+        Some((t, l))
+    }
+
+    /// フォルダを開いた一覧（DOM-SEL-02, 03, 12..15, 24, 25）。開けなければ None。
+    /// 譜面は `filter` で絞り込んで並べ（絞り込みを先へ回したら `filter` を書き換える）、`look` は並べ替えに使う記録と
+    /// カスタムフォルダの SQL を引く
     pub fn open(
         &self,
         folder: &Path,
         filter: &mut ListFilter,
-        record: &dyn Fn(&ChartHash) -> SortRecord,
+        look: &dyn Lookup,
     ) -> Option<Listing> {
+        if let Some((t, level)) = self.parse_table_key(folder) {
+            return self.open_table(t, level);
+        }
+        if let Some(c) = self.custom.iter().find(|c| c.path == folder) {
+            if c.has_command() {
+                if let Some(r) = look.custom(c) {
+                    let ids: Vec<usize> = r
+                        .paths
+                        .iter()
+                        .filter_map(|p| self.song_by_path(p))
+                        .collect();
+                    let listed =
+                        filter::list_custom(&self.songs, &ids, filter, c.max, r.ordered, look);
+                    if !listed.is_empty() {
+                        return Some(Listing {
+                            bars: listed.iter().map(|(i, _)| Bar::Song(*i)).collect(),
+                            groups: listed.iter().map(|(_, g)| Some(*g)).collect(),
+                        });
+                    }
+                }
+            }
+        }
         let song_dir = |s: &SongInfo| s.path.parent().map(Path::to_path_buf).unwrap_or_default();
         let songs: Vec<usize> = (0..self.songs.len())
             .filter(|&i| song_dir(&self.songs[i]).parent() == Some(folder))
             .collect();
         if !songs.is_empty() {
-            let listed = filter::list_songs(&self.songs, &songs, filter, record);
+            let listed = filter::list_songs(&self.songs, &songs, filter, look);
             return (!listed.is_empty()).then(|| Listing {
                 bars: listed.iter().map(|(i, _)| Bar::Song(*i)).collect(),
                 groups: listed.iter().map(|(_, g)| Some(*g)).collect(),
             });
         }
-        let subs = folder_bars(self.folders.iter().filter(|p| p.parent() == Some(folder)));
+        let subs = self.folder_bars(
+            self.folders
+                .iter()
+                .chain(self.custom.iter().map(|c| &c.path))
+                .filter(|p| p.parent() == Some(folder) && !self.roots.contains(p)),
+        );
         (!subs.is_empty()).then(|| Listing::folders(subs))
     }
 
-    /// バーのパス（曲は譜面、フォルダはフォルダ。LR2 の `filepath`）
-    fn bar_path<'a>(&'a self, bar: &'a Bar) -> &'a Path {
+    /// DOM-SEL-25: 難易度表はレベルを表の順に、レベルは譜面を表の順に（曲の一覧に無ければ `Missing`）並べる。
+    /// 絞り込み・並べ替えはしない
+    fn open_table(&self, t: usize, level: Option<usize>) -> Option<Listing> {
+        let table = self.tables.get(t)?;
+        let bars: Vec<Bar> = match level {
+            None => (0..table.levels.len()).map(|l| Bar::Level(t, l)).collect(),
+            Some(l) => table
+                .levels
+                .get(l)?
+                .charts
+                .iter()
+                .enumerate()
+                .map(|(k, c)| match self.table_song(c) {
+                    Some(i) => Bar::Song(i),
+                    None => Bar::Missing(t, l, k),
+                })
+                .collect(),
+        };
+        if bars.is_empty() {
+            return None;
+        }
+        let groups = bars
+            .iter()
+            .map(|b| matches!(b, Bar::Song(_)).then(Group::default))
+            .collect();
+        Some(Listing { bars, groups })
+    }
+
+    /// 難易度表の譜面
+    pub fn table_chart(&self, t: usize, l: usize, k: usize) -> Option<&TableChart> {
+        self.tables.get(t)?.levels.get(l)?.charts.get(k)
+    }
+
+    /// バーのパス（曲は譜面、フォルダはフォルダ。LR2 の `filepath`）。難易度表とそのレベル・無い譜面はファイルのパスにならない
+    pub fn bar_path(&self, bar: &Bar) -> PathBuf {
         match bar {
-            Bar::Folder { path, .. } => path,
-            Bar::Song(i) => &self.songs[*i].path,
+            Bar::Folder { path, .. } => path.clone(),
+            Bar::Song(i) => self.songs[*i].path.clone(),
+            Bar::Custom(c) => self.custom[*c].path.clone(),
+            Bar::Table(t) => Self::table_key(*t, None),
+            Bar::Level(t, l) => Self::table_key(*t, Some(*l)),
+            Bar::Missing(t, l, k) => {
+                let c = self.table_chart(*t, *l, *k);
+                PathBuf::from(format!(
+                    "{TABLE_KEY}chart\0{}\0{}",
+                    c.map_or("", |c| &c.md5),
+                    c.map_or("", |c| &c.sha256)
+                ))
+            }
+        }
+    }
+
+    /// 開けるバーなら開くパス
+    fn open_path(&self, bar: &Bar) -> Option<PathBuf> {
+        match bar {
+            Bar::Song(_) | Bar::Missing(..) => None,
+            b => Some(self.bar_path(b)),
         }
     }
 }
@@ -197,13 +439,15 @@ impl SelectState {
         &mut self,
         library: &Library,
         filter: &mut ListFilter,
-        record: &dyn Fn(&ChartHash) -> SortRecord,
+        look: &dyn Lookup,
     ) -> Decided {
         match self.current() {
             Some(Bar::Song(i)) => Decided::Song(*i),
-            Some(Bar::Folder { path, .. }) => {
-                let path = path.clone();
-                match library.open(&path, filter, record) {
+            Some(bar) => {
+                let Some(path) = library.open_path(bar) else {
+                    return Decided::Nothing;
+                };
+                match library.open(&path, filter, look) {
                     Some(list) => {
                         let prev = std::mem::replace(&mut self.list, list);
                         self.stack.push((prev, self.cursor, path));
@@ -235,12 +479,12 @@ impl SelectState {
         &mut self,
         library: &Library,
         filter: &mut ListFilter,
-        record: &dyn Fn(&ChartHash) -> SortRecord,
+        look: &dyn Lookup,
         key_changed: bool,
     ) {
         let list = match self.stack.last() {
             None => Listing::folders(library.root_bars()),
-            Some((_, _, folder)) => match library.open(folder, filter, record) {
+            Some((_, _, folder)) => match library.open(folder, filter, look) {
                 Some(l) => l,
                 None => return,
             },
@@ -253,7 +497,7 @@ impl SelectState {
                     Some((s.path.parent().map(Path::to_path_buf), s.key_mode)),
                 )
             }
-            Bar::Folder { path, .. } => (path.clone(), None),
+            other => (library.bar_path(other), None),
         });
         self.list = list;
         let Some((path, song)) = selected else {
@@ -294,7 +538,7 @@ impl SelectState {
         old: &Library,
         library: &Library,
         filter: &mut ListFilter,
-        record: &dyn Fn(&ChartHash) -> SortRecord,
+        look: &dyn Lookup,
     ) {
         // 段ごとの (一覧, カーソル)。最後が今の一覧
         let old_levels: Vec<(Listing, usize)> = self
@@ -307,7 +551,7 @@ impl SelectState {
         // 前の一覧で選んでいたバーのパス
         let old_paths: Vec<Option<PathBuf>> = old_levels
             .iter()
-            .map(|(l, c)| l.bars.get(*c).map(|b| old.bar_path(b).to_path_buf()))
+            .map(|(l, c)| l.bars.get(*c).map(|b| old.bar_path(b)))
             .collect();
         let place = |list: &Listing, k: usize| -> usize {
             let n = list.bars.len();
@@ -316,13 +560,13 @@ impl SelectState {
             }
             old_paths[k]
                 .as_ref()
-                .and_then(|p| list.bars.iter().position(|b| library.bar_path(b) == p))
+                .and_then(|p| list.bars.iter().position(|b| &library.bar_path(b) == p))
                 .unwrap_or(old_levels[k].1.min(n - 1))
         };
         let mut list = Listing::folders(library.root_bars());
         let mut stack = vec![];
         for (k, folder) in opened.iter().enumerate() {
-            let Some(next) = library.open(folder, filter, record) else {
+            let Some(next) = library.open(folder, filter, look) else {
                 break;
             };
             let c = place(&list, k);
@@ -338,14 +582,14 @@ impl SelectState {
         &mut self,
         library: &Library,
         filter: &mut ListFilter,
-        record: &dyn Fn(&ChartHash) -> SortRecord,
+        look: &dyn Lookup,
     ) -> bool {
         let (Some(Bar::Song(i)), Some(g)) = (self.current(), self.current_group()) else {
             return false;
         };
         filter.difficulty =
             filter::next_difficulty(filter.difficulty, library.songs()[*i].difficulty, g);
-        self.refilter(library, filter, record, false);
+        self.refilter(library, filter, look, false);
         true
     }
 }
@@ -609,5 +853,7 @@ impl MouseButton {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_custom;
 #[cfg(test)]
 mod tests_reload;

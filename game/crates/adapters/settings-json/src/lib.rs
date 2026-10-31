@@ -13,6 +13,7 @@
 //! | SJS-08 | リザルトスキンは `result_skin`（パス。null・無しは None） |
 //! | SJS-09 | スキン設定の選択は `skin_custom` に スキンのパス → { 項目名: 選んだ名前（文字列）}（無しは空） |
 //! | SJS-10 | 選曲の並べ替え・絞り込みは `select_sort`（0..4）・`select_key`（0..7）・`select_difficulty`（0..5）、プレビュー音は `preview`（真偽）。範囲の外は既定（0・1・0）、無しは既定（プレビュー音は鳴らす） |
+//! | SJS-11 | 難易度表は `tables`（URL の文字列の配列。無しは空） |
 use application::ports::{PortError, SettingsStore};
 use application::settings::Settings;
 use domain::input::{Side, Source, PLACES, SLOTS};
@@ -139,6 +140,7 @@ pub fn to_json(s: &Settings) -> Value {
         "select_key": s.select.key,
         "select_difficulty": s.select.difficulty,
         "preview": s.preview,
+        "tables": s.tables,
     })
 }
 
@@ -173,6 +175,14 @@ pub fn from_json(v: &Value) -> Result<Settings, PortError> {
             "select_key" => s.select.key = int(v, "select_key")?,
             "select_difficulty" => s.select.difficulty = int(v, "select_difficulty")?,
             "preview" => s.preview = v.as_bool().ok_or_else(|| err("preview"))?,
+            "tables" => {
+                s.tables = v
+                    .as_array()
+                    .ok_or_else(|| err("tables"))?
+                    .iter()
+                    .map(|u| u.as_str().map(str::to_string).ok_or_else(|| err("tables")))
+                    .collect::<Result<_, _>>()?
+            }
             "analog_scratch_ms" if !v.is_null() => {
                 s.bindings.analog_scratch_ms =
                     Some(v.as_u64().ok_or_else(|| err("analog_scratch_ms"))? as u32)

@@ -31,6 +31,8 @@ pub struct Settings {
     pub select: ListFilter,
     /// 選曲のプレビュー音（LR2 の `config.select.preview`。既定は鳴らす）
     pub preview: bool,
+    /// 難易度表の URL（beatoraja と同じく HTML の `bmstable` かヘッダの JSON。reprise の拡張）
+    pub tables: Vec<String>,
 }
 
 impl Default for Settings {
@@ -48,6 +50,7 @@ impl Default for Settings {
             skin_custom: BTreeMap::new(),
             select: ListFilter::default(),
             preview: true,
+            tables: vec![],
         }
     }
 }
