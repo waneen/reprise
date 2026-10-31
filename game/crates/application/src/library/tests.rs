@@ -170,6 +170,10 @@ impl SongDb for MemDb {
     }
 }
 
+fn utf8(b: &[u8]) -> String {
+    String::from_utf8_lossy(b).into_owned()
+}
+
 fn loaders() -> Vec<Box<dyn ChartLoader>> {
     vec![Box::new(TextLoader)]
 }
@@ -197,6 +201,7 @@ fn run(fs: &FakeFs, db: &mut MemDb, r: &[&str], now: i64) -> bool {
         fs,
         loaders: &ls,
         now,
+        decode: utf8,
     };
     update(&scan, db, &roots(r)).unwrap()
 }
@@ -292,6 +297,7 @@ fn app_lib_04_song_entry(#[case] path: &str, #[case] txt: bool) {
         fs: &fs,
         loaders: &ls,
         now: 0,
+        decode: utf8,
     };
     let s = read_song(&scan, Path::new(path), 33).unwrap();
     assert_eq!(
@@ -354,7 +360,7 @@ fn app_lib_06_load(#[case] open: Option<&str>, #[case] want: Vec<&str>) {
                 key: 0,
                 ..Default::default()
             };
-            lib.open(Path::new(f), &mut all, &|_| Default::default())
+            lib.open(Path::new(f), &mut all, &domain::select::NoLookup)
                 .unwrap()
                 .bars
         }
@@ -364,6 +370,7 @@ fn app_lib_06_load(#[case] open: Option<&str>, #[case] want: Vec<&str>) {
         .map(|b| match b {
             domain::select::Bar::Folder { title, .. } => format!("[{title}]"),
             domain::select::Bar::Song(i) => lib.songs()[*i].path.display().to_string(),
+            other => format!("{other:?}"),
         })
         .collect();
     assert_eq!(got, want);
@@ -391,6 +398,7 @@ fn app_lib_07_apply(
         fs: &fs,
         loaders: &ls,
         now: 200,
+        decode: utf8,
     };
     let paths: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
     assert_eq!(
@@ -402,4 +410,67 @@ fn app_lib_07_apply(
         .filter(|r| !r.starts_with('['))
         .collect();
     assert_eq!(songs, want);
+}
+
+/// APP-LIB-08: カスタムフォルダ（パス → (題名, command, 種類, 登録した)）
+#[rstest]
+#[case::found(&["/r"], |_: &FakeFs| {}, vec![("/r/fav.lr2folder", "Fav", "clear = 1", 2, false)])]
+#[case::root_registered(&["/r", "/n.lr2folder"], |_: &FakeFs| {}, vec![("/n.lr2folder", "New", "__NEWSONG__", 3, true), ("/r/fav.lr2folder", "Fav", "clear = 1", 2, false)])]
+#[case::reread(&["/r", "/n.lr2folder"], |fs: &FakeFs| {
+    fs.set("/r/fav.lr2folder", 20, Some("#TITLE Fav2\n#COMMAND clear = 2\n"));
+    fs.set("/n.lr2folder", 20, Some("#TITLE New2\n#COMMAND __NEWSONG__\n"));
+}, vec![("/n.lr2folder", "New2", "__NEWSONG__", 3, true), ("/r/fav.lr2folder", "Fav2", "clear = 2", 2, false)])]
+#[case::same_date_kept(&["/r"], |fs: &FakeFs| fs.set("/r/fav.lr2folder", 10, Some("#TITLE X\n")), vec![("/r/fav.lr2folder", "Fav", "clear = 1", 2, false)])]
+#[case::removed(&["/r"], |fs: &FakeFs| fs.remove("/r/fav.lr2folder"), vec![])]
+fn app_lib_08_custom(
+    #[case] r: &[&str],
+    #[case] change: fn(&FakeFs),
+    #[case] want: Vec<(&str, &str, &str, i32, bool)>,
+) {
+    let fs = FakeFs::with(&[
+        ("/r", 10, None),
+        ("/r/a", 10, None),
+        ("/r/a/1.bms", 10, Some("one")),
+        (
+            "/r/fav.lr2folder",
+            10,
+            Some("#TITLE Fav\n#COMMAND clear = 1\n"),
+        ),
+        ("/r/.lr2folder", 10, Some("#TITLE no\n")),
+        (
+            "/n.lr2folder",
+            10,
+            Some("#TITLE New\n#COMMAND __NEWSONG__\n"),
+        ),
+    ]);
+    let mut db = MemDb::default();
+    run(&fs, &mut db, r, 1);
+    change(&fs);
+    run(&fs, &mut db, r, 2);
+    let got: Vec<(String, String, String, i32, bool)> = db
+        .folders
+        .values()
+        .filter_map(|(f, _)| {
+            let c = f.custom.as_ref()?;
+            Some((
+                f.path.display().to_string(),
+                f.title.clone(),
+                c.command.clone(),
+                c.kind,
+                f.root,
+            ))
+        })
+        .collect();
+    let want: Vec<(String, String, String, i32, bool)> = want
+        .iter()
+        .map(|(p, t, c, k, root)| (p.to_string(), t.to_string(), c.to_string(), *k, *root))
+        .collect();
+    assert_eq!(got, want);
+    // DB からの曲一覧ではカスタムフォルダ
+    let lib = load(&db).unwrap();
+    let mut names: Vec<String> = lib.custom().iter().map(|c| c.title.clone()).collect();
+    names.sort();
+    let mut titles: Vec<String> = want.iter().map(|w| w.1.clone()).collect();
+    titles.sort();
+    assert_eq!(names, titles);
 }
