@@ -373,6 +373,9 @@ pub fn apply(
         .collect();
     for t in &tops {
         changed |= check(scan, db, roots, &|p| p.starts_with(t))?;
+    }
+    // 探すのは知らされたどのフォルダも（上のフォルダを探しても DB にある子フォルダには入らないので）
+    for t in &targets {
         if is_dir(scan.fs, t) {
             changed |= search(scan, db, t)?;
         }
