@@ -51,3 +51,5 @@ bevy = { version = "0.19.1", default-features = false, features = ["system_font_
 bevy = { version = "0.19.1", default-features = false, features = ["web"] }
 wasm-bindgen = "0.2"
 js-sys = "0.3"
+# 曲サーバーにつなぐ（ファイル・曲一覧・記録・カスタムフォルダの SQL）
+remote = { path = "../adapters/remote" }
