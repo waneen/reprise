@@ -287,6 +287,52 @@ impl SelectState {
         self.cursor = found.unwrap_or(0);
     }
 
+    /// DOM-SEL-22: 曲一覧が替わったので、開いていたフォルダを開き直してカーソルを置き直す（reprise の拡張）
+    /// `old` は前の曲一覧（今の一覧の曲の添字はこれを指す）
+    pub fn reload(
+        &mut self,
+        old: &Library,
+        library: &Library,
+        filter: &mut ListFilter,
+        record: &dyn Fn(&ChartHash) -> SortRecord,
+    ) {
+        // 段ごとの (一覧, カーソル)。最後が今の一覧
+        let old_levels: Vec<(Listing, usize)> = self
+            .stack
+            .iter()
+            .map(|(l, c, _)| (l.clone(), *c))
+            .chain(std::iter::once((self.list.clone(), self.cursor)))
+            .collect();
+        let opened: Vec<PathBuf> = self.stack.iter().map(|(_, _, p)| p.clone()).collect();
+        // 前の一覧で選んでいたバーのパス
+        let old_paths: Vec<Option<PathBuf>> = old_levels
+            .iter()
+            .map(|(l, c)| l.bars.get(*c).map(|b| old.bar_path(b).to_path_buf()))
+            .collect();
+        let place = |list: &Listing, k: usize| -> usize {
+            let n = list.bars.len();
+            if n == 0 {
+                return 0;
+            }
+            old_paths[k]
+                .as_ref()
+                .and_then(|p| list.bars.iter().position(|b| library.bar_path(b) == p))
+                .unwrap_or(old_levels[k].1.min(n - 1))
+        };
+        let mut list = Listing::folders(library.root_bars());
+        let mut stack = vec![];
+        for (k, folder) in opened.iter().enumerate() {
+            let Some(next) = library.open(folder, filter, record) else {
+                break;
+            };
+            let c = place(&list, k);
+            stack.push((std::mem::replace(&mut list, next), c, folder.clone()));
+        }
+        self.cursor = place(&list, stack.len());
+        self.list = list;
+        self.stack = stack;
+    }
+
     /// DOM-SEL-16: → か SELECT（選んでいるのが曲のとき）。難易度の絞り込みを替えて一覧を作り直す。曲でなければ false
     pub fn change_difficulty(
         &mut self,
@@ -563,3 +609,5 @@ impl MouseButton {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_reload;
