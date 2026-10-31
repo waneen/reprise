@@ -381,6 +381,7 @@ fn app_lib_06_load(#[case] open: Option<&str>, #[case] want: Vec<&str>) {
 #[case::new_file(|fs: &FakeFs| fs.set("/r/a/5.bms", 10, Some("five")), &["/r/a/5.bms"], true, vec!["/r/a/1.bms=one", "/r/a/5.bms=five", "/r/p/s/2.bms=two"])]
 #[case::new_nested_folder(|fs: &FakeFs| { fs.set("/r/n", 10, None); fs.set("/r/n/m", 10, None); fs.set("/r/n/m/6.bms", 10, Some("six")); }, &["/r/n/m/6.bms"], true, vec!["/r/a/1.bms=one", "/r/n/m/6.bms=six", "/r/p/s/2.bms=two"])]
 #[case::removed_folder(|fs: &FakeFs| fs.remove("/r/p/s"), &["/r/p/s"], true, vec!["/r/a/1.bms=one"])]
+#[case::new_file_with_parent_event(|fs: &FakeFs| fs.set("/r/a/5.bms", 10, Some("five")), &["/r", "/r/a/5.bms"], true, vec!["/r/a/1.bms=one", "/r/a/5.bms=five", "/r/p/s/2.bms=two"])]
 #[case::edited(|fs: &FakeFs| fs.set("/r/a/1.bms", 11, Some("ONE")), &["/r/a/1.bms"], true, vec!["/r/a/1.bms=ONE", "/r/p/s/2.bms=two"])]
 #[case::outside_ignored(|fs: &FakeFs| fs.set("/q/7.bms", 10, Some("seven")), &["/q/7.bms"], false, vec!["/r/a/1.bms=one", "/r/p/s/2.bms=two"])]
 fn app_lib_07_apply(
