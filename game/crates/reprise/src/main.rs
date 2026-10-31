@@ -8,6 +8,7 @@
 //! 遊び終えると `config.json` の `result_skin` のリザルトスキンでリザルト画面を出す（無ければ結果を文字で出す）。
 //! `--skin-root` はスキン中のパスの基準（LR2 なら LR2 本体のフォルダ。既定は今のフォルダ）。
 //! `config.json` に無いスキンは LR2 本体の `LR2files/Config/config.xml` で選んでいるもの。
+//! 曲一覧は `--data` のフォルダの `song.db`（LR2 の song.db と同じテーブル）に置き、譜面のフォルダを見張って作り直す（ネイティブ版）。
 //! 記録は `--data` のフォルダ（既定は今のフォルダの `reprise-data`）の `score.db` に、設定は `config.json` に保存する
 //! （起動引数で渡した設定も保存するので、次からは引数無しで選曲から始められる）。
 mod input;
@@ -456,12 +457,12 @@ fn main() {
     let _ = platform::score_importers();
     let scores = ScoreDb(platform::open_scores(&data_dir).map(Mutex::new));
     let direct = chart_path.is_some();
-    let library = if direct {
-        Library::default()
+    let (library, feed) = if direct {
+        (Library::default(), None)
     } else {
-        let lib = application::usecase::scan_library(fs.as_ref(), &chart_loaders(), &s.songs);
+        let (lib, feed) = platform::library(&data_dir, &s.songs, fs.clone(), chart_loaders);
         eprintln!("譜面 {} 件", lib.songs().len());
-        lib
+        (lib, feed)
     };
     let skin_root = s
         .skin_root
@@ -551,6 +552,7 @@ fn main() {
         s_select,
         option_names,
     ))
+    .insert_resource(select_scene::LibraryFeed(feed))
     .init_resource::<preview::PreviewPlayer>()
     .add_systems(
         PreUpdate,
@@ -561,6 +563,7 @@ fn main() {
     .add_systems(
         Update,
         (
+            select_scene::refresh,
             (select_scene::input, select_scene::draw)
                 .chain()
                 .run_if(|s: Res<select_scene::Selection>| !s.has_skin()),
