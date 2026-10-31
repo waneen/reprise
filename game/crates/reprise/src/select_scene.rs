@@ -5,12 +5,14 @@
 //! START を押している間はパネル 1 が開いて鍵盤 1 で鍵盤数の絞り込みを替える（LR2 と同じ）。皿・鍵盤は LR2 と同じく 1P・2P のどちらでもよい。
 //! スキンで描くときは LR2 と同じく、一覧が動くアニメーション・マウスのホイール・マウスでのバーの選択・BUTTON のクリックも受ける
 //! （BUTTON 10..12 で絞り込み・並べ替え、13 でキー設定画面へ）。選んでいる曲のプレビュー音は `preview`。
-//! 曲一覧が届いたら（ネイティブ版のフォルダの見張り）、開いていたフォルダとカーソルを保って一覧を作り直す（`refresh`）
+//! 曲一覧か難易度表が届いたら（ネイティブ版のフォルダの見張り・表の取得）、開いていたフォルダとカーソルを保って一覧を作り直す（`refresh`）。
+//! カスタムフォルダ（`.lr2folder`）は開くときに曲の DB を SQL で引く（`Look`）
 use crate::input::SlotInput;
 use crate::keyconfig_scene::KeyConfigScreen;
 use crate::preview::{self, PreviewPlayer, PreviewSound};
 use crate::skin_render::{self, Pixels, SkinDraw, SkinGfx};
 use crate::{list_font, save_settings, Boot, PlayRequest, Scene, ScoreDb, SettingsRes};
+use application::ports::SongQuery;
 use application::select_skin::{lr2_clear, OptionNames, SelectBar, SelectSkin};
 use bevy::input::mouse::MouseWheel;
 use bevy::platform::time::Instant;
@@ -21,15 +23,21 @@ use domain::play::RulesetId;
 use domain::score::ClearLamp;
 use domain::select::Bar;
 use domain::select::{
-    BarScroll, Decided, FilterKind, KeyState, Library, ListFilter, MouseButton as Lr2Mouse, Panel,
-    PanelChange, ScrollRepeat, SelectState, SortRecord,
+    BarScroll, CustomFolder, CustomResult, Decided, DifficultyTable, FilterKind, KeyState, Library,
+    ListFilter, Lookup, MouseButton as Lr2Mouse, Panel, PanelChange, ScrollRepeat, SelectState,
+    SortRecord,
 };
 use domain::skin::lr2::{bar_slot_dst, button_clicks, draw_select, mouse_on, BarView, SelectView};
 use domain::skin::Skin;
+use std::sync::{Arc, Mutex};
 
 /// 新しい曲一覧の届け先（ネイティブ版は曲の DB とフォルダの見張り。無ければ一覧は替わらない）
 #[derive(Resource)]
 pub struct LibraryFeed(pub Option<Box<dyn application::ports::LibrarySource>>);
+
+/// 取ってきた難易度表の届け先（取ってくるスレッドが置き、選曲画面が受け取る。reprise の拡張）
+#[derive(Resource, Default, Clone)]
+pub struct TableFeed(pub Arc<Mutex<Option<Vec<DifficultyTable>>>>);
 
 /// 一覧に出す行数（カーソルの上下にこの半分ずつ）
 const ROWS: usize = 15;
@@ -51,6 +59,10 @@ pub struct Selection {
     panel: Panel,
     /// 文字の一覧のとき、選んでいるバーを替えた時刻（スキンのタイマー 11 の代わり。プレビュー音に使う）
     text_bar_ms: i64,
+    /// カスタムフォルダの SQL を引く接続（無ければカスタムフォルダは開けない）
+    query: Option<Box<dyn SongQuery>>,
+    /// 今の難易度表（新しい曲一覧に付ける）
+    tables: Vec<DifficultyTable>,
 }
 
 /// 選曲スキンで描くための状態
@@ -80,8 +92,10 @@ impl Selection {
         skin: Option<(Skin, Vec<Option<Pixels>>)>,
         filter: ListFilter,
         names: OptionNames,
+        query: Option<Box<dyn SongQuery>>,
     ) -> Self {
         let state = SelectState::new(&library);
+        let tables = library.tables().to_vec();
         Self {
             library,
             state,
@@ -98,6 +112,8 @@ impl Selection {
             names,
             panel: Panel::default(),
             text_bar_ms: 0,
+            query,
+            tables,
         }
     }
     /// 選曲スキンで描くか
@@ -168,15 +184,28 @@ pub fn enter(
     ));
 }
 
-/// 新しい曲一覧が届いていれば、開いていたフォルダとカーソルを保って作り直す（DOM-SEL-22。reprise の拡張）
-pub fn refresh(feed: Res<LibraryFeed>, db: Res<ScoreDb>, mut sel: ResMut<Selection>) {
-    let Some(library) = feed.0.as_ref().and_then(|f| f.poll()) else {
+/// 新しい曲一覧か難易度表が届いていれば、開いていたフォルダとカーソルを保って作り直す（DOM-SEL-22。reprise の拡張）
+pub fn refresh(
+    feed: Res<LibraryFeed>,
+    tables: Res<TableFeed>,
+    db: Res<ScoreDb>,
+    mut sel: ResMut<Selection>,
+) {
+    let new_tables = tables.0.lock().unwrap_or_else(|e| e.into_inner()).take();
+    let new_library = feed.0.as_ref().and_then(|f| f.poll());
+    if new_tables.is_none() && new_library.is_none() {
         return;
-    };
+    }
     let sel = &mut *sel;
+    if let Some(t) = new_tables {
+        sel.tables = t;
+    }
+    let library = new_library
+        .unwrap_or_else(|| sel.library.clone())
+        .with_tables(sel.tables.clone());
     let before = current_path(sel);
     let old = std::mem::replace(&mut sel.library, library);
-    let rec = sort_record(&db);
+    let rec = look(&db, sel.query.as_deref());
     sel.state.reload(&old, &sel.library, &mut sel.filter, &rec);
     sel.dirty = true;
     let changed = current_path(sel) != before;
@@ -199,10 +228,7 @@ pub fn refresh(feed: Res<LibraryFeed>, db: Res<ScoreDb>, mut sel: ResMut<Selecti
 
 /// 選んでいるバーのパス
 fn current_path(sel: &Selection) -> Option<std::path::PathBuf> {
-    match sel.state.current()? {
-        Bar::Folder { path, .. } => Some(path.clone()),
-        Bar::Song(i) => Some(sel.library.songs()[*i].path.clone()),
-    }
+    Some(sel.library.bar_path(sel.state.current()?))
 }
 
 /// 1P か 2P の操作かキーボードのキーの状態（LR2 の選曲は 1P と 2P の操作のどちらも受ける）
@@ -221,16 +247,33 @@ fn key_state(
     }
 }
 
-/// 並べ替えに使う記録（LR2 のルールの記録のランプと EX スコア）
-fn sort_record(db: &ScoreDb) -> impl Fn(&ChartHash) -> SortRecord + '_ {
-    |h| {
-        db.find(h, RulesetId::Lr2)
+/// 一覧を作るときに引くもの（並べ替えに使う LR2 のルールの記録のランプと EX スコア、カスタムフォルダの SQL）
+struct Look<'a> {
+    db: &'a ScoreDb,
+    query: Option<&'a dyn SongQuery>,
+}
+
+impl Lookup for Look<'_> {
+    fn record(&self, h: &ChartHash) -> SortRecord {
+        self.db
+            .find(h, RulesetId::Lr2)
             .map(|r| SortRecord {
                 clear: lr2_clear(r.lamp),
                 ex_score: r.ex_score,
             })
             .unwrap_or_default()
     }
+    fn custom(&self, folder: &CustomFolder) -> Option<CustomResult> {
+        let q = self.query?;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        application::custom_folder::evaluate(q, folder, now)
+    }
+}
+
+fn look<'a>(db: &'a ScoreDb, query: Option<&'a dyn SongQuery>) -> Look<'a> {
+    Look { db, query }
 }
 
 /// 鍵盤と START・SELECT の操作（文字の一覧と選曲スキンで共通。LR2 `ProcI_Select`）
@@ -255,7 +298,7 @@ fn keys_of(
     db: &ScoreDb,
 ) -> Keys {
     let mut k = Keys::default();
-    let rec = sort_record(db);
+    let rec = look(db, sel.query.as_deref());
     // パネル 1（START か Space で開き、離すと閉じる）
     let start_pressed = slots.pressed_any(START) || keys.just_pressed(KeyCode::Space);
     let start_released = slots.released_any(START) || keys.just_released(KeyCode::Space);
@@ -297,7 +340,7 @@ fn decide(
     auto: bool,
     next: &mut NextState<Scene>,
 ) -> bool {
-    let rec = sort_record(db);
+    let rec = look(db, sel.query.as_deref());
     match sel.state.decide(&sel.library, &mut sel.filter, &rec) {
         Decided::Song(i) => {
             commands.insert_resource(PlayRequest {
@@ -442,6 +485,15 @@ pub fn draw(
         let mark = if i == sel.state.cursor() { ">" } else { " " };
         let line = match &bars[i] {
             Bar::Folder { title, .. } => format!("      [{title}]"),
+            Bar::Custom(c) => format!("      <{}>", sel.library.custom()[*c].title),
+            Bar::Table(t) => format!("      {{{}}}", sel.library.tables()[*t].name),
+            Bar::Level(t, l) => format!("      {{{}}}", sel.library.tables()[*t].levels[*l].name),
+            Bar::Missing(t, l, k) => format!(
+                "    ? {}",
+                sel.library
+                    .table_chart(*t, *l, *k)
+                    .map_or("", |c| c.title.as_str())
+            ),
             Bar::Song(j) => {
                 let song = &sel.library.songs()[*j];
                 let lamp = db
@@ -602,7 +654,7 @@ pub fn skin_input(
         }
         if let Some(kind) = clicked {
             sel.filter.next(kind);
-            let rec = sort_record(&db);
+            let rec = look(&db, sel.query.as_deref());
             sel.state
                 .refilter(&sel.library, &mut sel.filter, &rec, kind == FilterKind::Key);
             reload = true;
