@@ -92,6 +92,10 @@ fn lwt_01_start(#[case] again: bool, #[case] first: Vec<&str>, #[case] then: Vec
             now: 1,
         };
         library::update(&scan, &mut db, std::slice::from_ref(&root)).unwrap();
+        // 前の起動はフォルダを書き換える前（日時は秒なので、同じ秒の書き換えには LR2 と同じく気づかない）
+        db.connection()
+            .execute("UPDATE folder SET date = date - 10", [])
+            .unwrap();
         std::fs::create_dir_all(root.join("b")).unwrap();
         std::fs::write(root.join("b/2.bms"), "two").unwrap();
     }
