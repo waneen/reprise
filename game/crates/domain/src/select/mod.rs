@@ -183,6 +183,14 @@ impl Library {
         self.tables = tables;
         self
     }
+    /// 登録したフォルダ
+    pub fn roots(&self) -> &[PathBuf] {
+        &self.roots
+    }
+    /// 登録したフォルダの中のフォルダ
+    pub fn folders(&self) -> &[PathBuf] {
+        &self.folders
+    }
     pub fn songs(&self) -> &[SongInfo] {
         &self.songs
     }

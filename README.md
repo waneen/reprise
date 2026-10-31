@@ -48,6 +48,15 @@ cd game && cargo run -p reprise --release -- [--songs path/to/BMS...] [path/to/c
 ### ブラウザ版
 `bash tools/web-build.sh` で `web/pkg/` に wasm を作り、`web/` を静的に配信して開きます（例: `python3 -m http.server -d web 8000`）。ブラウザはフォルダを自由に読めないので、ページでは譜面のフォルダ（いくつでも。ネイティブ版の `--songs`）と、使うなら LR2 本体のフォルダ（`--skin-root`）だけを選び（File System Access が使えればフォルダの選択画面、無ければファイルの選択でフォルダを選ぶ）、「はじめる」で選曲画面から始まります。その後はネイティブ版と同じ画面と操作です（スキンは LR2 本体の `config.xml` で選んでいるもの）。選んだファイルはページの中だけで読み、どこにも送りません。ネイティブ版との違い: 始める前に選んだフォルダのファイル（LR2 本体は `LR2files` の `Theme`・`Font`・`Config` だけ）をすべて読み込むので、大きなフォルダは時間とメモリがかかる。設定は `config.json` と同じ中身をページの保存領域（`localStorage`）に置き、記録は保存しない。画面の更新に合わせてしかフレームが回らない（判定の細かさは約 1 フレーム）。OS のフォントは使えず、フォント指定の文字と文字の一覧は内蔵の英数字フォントで出す（日本語は表示できない。LR2FONT の画像フォントは使える）。音の遅延が大きいことがある。
 
+### 曲サーバー（reprise の拡張）
+ブラウザ版を、ほかの機械（自分の PC など）にある譜面・スキン・記録につなげます。
+```sh
+cd game && cargo run -p reprise-server --release -- [--data path/to/folder] [--songs path/to/BMS...] [--skin-root path/to/LR2] [--table URL...] [--bind 127.0.0.1:8770] [--token 合言葉] [--web ../web]
+```
+曲サーバーはネイティブ版と同じ `--data` のフォルダ（既定は `reprise-data`）の `config.json` の `songs`・`skin_root`・`tables` を使い（起動引数があればそちら。保存はしません）、同じ `song.db`（曲の DB とフォルダの見張り）・`score.db`（記録）・`table`（難易度表）を持ちます。起動すると URL と合言葉を出します（合言葉は `--token` か、`--data` のフォルダの `server-token`。無ければ作ります）。`--web` に `web/`（`tools/web-build.sh` で作ったもの）を渡すとページも配るので、ブラウザで `http://<サーバー>:8770/#token=<合言葉>` を開き、「曲サーバーにつなぐ」の「つなぐ」を押すとそのまま選曲画面から始まります（別の場所で配ったページからも URL と合言葉を入れてつなげます）。選曲画面とプレイはネイティブ版と同じで、カスタムフォルダ・難易度表・サーバー側での譜面の追加や書き換え（見張り）もそのまま使え、記録はサーバーの `score.db` に保存されます。ネイティブ版は曲サーバーを使わず、同じことをその機械の中で行います。
+
+> **注意**: 曲サーバーは譜面・音・画像・スキンのファイルをそのまま配ります。既定ではこの機械からしかつなげません（`--bind 127.0.0.1:8770`）。家の中のネットワークで使うときだけ `--bind 0.0.0.0:8770` などにし、**インターネットには公開しないでください**（配っている BMS やスキンの作者の権利を侵すおそれがあります）。HTTPS ではないので、合言葉は同じネットワークの人には見えることがあります。
+
 Linux では Bevy のために `libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev libfontconfig-dev` が必要です。
 
 各 workspace で `cargo test`。CI は Linux / Windows / macOS でのテストと lint だけを行います。他アーキテクチャ向けのクロスビルドは手元で `bash tools/cross-build.sh <target>` を実行します（準備はスクリプト冒頭に記載）。`v*` タグで6ターゲットのバイナリを Release に添付します。

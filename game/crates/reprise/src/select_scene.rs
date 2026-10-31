@@ -265,10 +265,7 @@ impl Lookup for Look<'_> {
     }
     fn custom(&self, folder: &CustomFolder) -> Option<CustomResult> {
         let q = self.query?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64);
-        application::custom_folder::evaluate(q, folder, now)
+        application::custom_folder::evaluate(q, folder, crate::platform::unix_now())
     }
 }
 
