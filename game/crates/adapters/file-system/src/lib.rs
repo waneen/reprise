@@ -4,6 +4,8 @@
 //! | ID | ルール |
 //! |---|---|
 //! | FS-STD-01 | `StdFs`: 一覧はフォルダの中身（名前・パス・ファイルか）。フォルダでなければ空。読めないファイルは `Io` エラー |
+//! | FS-STD-02 | `StdFs`: 更新日時はファイル・フォルダの最終更新（1970 年からの秒）。無ければ None |
+//! | FS-MEM-03 | `MemFs`: 更新日時は置いたファイルとそこから分かるフォルダが 0、ほかは None |
 //! | FS-MEM-01 | `MemFs`: パスは `.` を除き `..` を 1 つ上として正規化して比べる（`\` も区切り）。置いたファイルだけが読めて、それ以外は `Io` エラー |
 //! | FS-MEM-02 | `MemFs`: 一覧は直下のファイルと、置いたファイルから分かるフォルダ（名前の重複なし、名前順） |
 use application::ports::{DirEntry, FileSystem, PortError};
@@ -32,6 +34,13 @@ impl FileSystem for StdFs {
     }
     fn is_file(&self, path: &Path) -> bool {
         path.is_file()
+    }
+    fn modified(&self, path: &Path) -> Option<i64> {
+        let t = std::fs::metadata(path).ok()?.modified().ok()?;
+        Some(match t.duration_since(std::time::UNIX_EPOCH) {
+            Ok(d) => d.as_secs() as i64,
+            Err(e) => -(e.duration().as_secs() as i64),
+        })
     }
 }
 
@@ -100,6 +109,11 @@ impl FileSystem for MemFs {
     }
     fn is_file(&self, path: &Path) -> bool {
         self.files.contains_key(&normalize(path))
+    }
+    /// 置いたファイルと、置いたファイルから分かるフォルダは 0、それ以外は None
+    fn modified(&self, path: &Path) -> Option<i64> {
+        let p = normalize(path);
+        self.files.keys().any(|f| f.starts_with(&p)).then_some(0)
     }
 }
 
