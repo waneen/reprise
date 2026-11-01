@@ -6,7 +6,7 @@ fn k(name: &str) -> Source {
     Source::Key(name.into())
 }
 
-/// DOM-INP-01: 既定の割り当て
+/// DOM-INP-01: 既定の割り当て（2P は無し）
 #[rstest]
 #[case::scratch_up(SCRATCH_UP, "ShiftLeft")]
 #[case::scratch_down(SCRATCH_DOWN, "ControlLeft")]
@@ -17,32 +17,46 @@ fn k(name: &str) -> Source {
 #[case::select(SELECT, "KeyW")]
 fn dom_inp_01_default(#[case] slot: usize, #[case] name: &str) {
     let b = Bindings::default();
-    assert_eq!(b.slots[slot], vec![k(name)]);
+    assert_eq!(b.slots[slot], vec![Some(k(name))]);
+    assert!(b.p2[slot].is_empty());
     assert_eq!(b.analog_scratch_ms, None);
 }
 
-/// DOM-INP-02: 割り当て（同じ物理入力は 1 つの操作だけ）と外す
+fn axis() -> Source {
+    Source::Axis {
+        axis: "LeftStickX".into(),
+        plus: true,
+    }
+}
+
+/// DOM-INP-02: 位置に置く・外す（同じ物理入力をほかの操作・位置にも置ける。末尾の空きは持たない）と、物理入力の付いている操作
 #[rstest]
-#[case::add(key_slot(1), k("KeyA"), vec![k("KeyZ"), k("KeyA")], None)]
-#[case::move_from_other(key_slot(1), k("KeyS"), vec![k("KeyZ"), k("KeyS")], Some(key_slot(2)))]
-#[case::same_slot_once(key_slot(1), k("KeyZ"), vec![k("KeyZ")], None)]
-#[case::pad(SCRATCH_UP, Source::Axis { axis: "LeftStickX".into(), plus: true }, vec![k("ShiftLeft"), Source::Axis { axis: "LeftStickX".into(), plus: true }], None)]
-fn dom_inp_02_bind(
+#[case::append(Side::P1, key_slot(1), 1, Some(k("KeyA")), vec![Some(k("KeyZ")), Some(k("KeyA"))], vec![key_slot(1)])]
+#[case::replace(Side::P1, key_slot(1), 0, Some(k("KeyA")), vec![Some(k("KeyA"))], vec![key_slot(1)])]
+#[case::hole(Side::P1, key_slot(1), 3, Some(axis()), vec![Some(k("KeyZ")), None, None, Some(axis())], vec![key_slot(1)])]
+#[case::same_source_twice(Side::P1, key_slot(1), 1, Some(k("KeyS")), vec![Some(k("KeyZ")), Some(k("KeyS"))], vec![key_slot(1), key_slot(2)])]
+#[case::remove_trims(Side::P1, key_slot(1), 0, None, vec![], vec![])]
+#[case::beyond_places(Side::P1, key_slot(1), 16, Some(k("KeyA")), vec![Some(k("KeyZ"))], vec![])]
+#[case::p2_not_read(Side::P2, key_slot(1), 0, Some(k("KeyA")), vec![Some(k("KeyZ"))], vec![])]
+fn dom_inp_02_set(
+    #[case] side: Side,
     #[case] slot: usize,
-    #[case] src: Source,
-    #[case] want: Vec<Source>,
-    #[case] emptied: Option<usize>,
+    #[case] place: usize,
+    #[case] src: Option<Source>,
+    #[case] want_p1: Vec<Option<Source>>,
+    #[case] slots_of_src: Vec<usize>,
 ) {
     let mut b = Bindings::default();
-    b.bind(slot, src.clone());
-    assert_eq!(b.slots[slot], want);
-    assert_eq!(b.slot_of(&src), Some(slot));
-    if let Some(e) = emptied {
-        assert!(b.slots[e].is_empty());
+    b.set(side, slot, place, src.clone());
+    assert_eq!(b.slots[slot], want_p1);
+    if side == Side::P2 {
+        assert_eq!(b.place(Side::P2, slot, place), src.as_ref());
     }
-    b.clear(slot);
-    assert!(b.slots[slot].is_empty());
-    assert_eq!(b.slot_of(&src), None);
+    if let Some(s) = &src {
+        assert_eq!(b.slots_of(s).collect::<Vec<_>>(), slots_of_src);
+    }
+    b.clear_keys();
+    assert!(b.slots.iter().chain(b.p2.iter()).all(Vec::is_empty));
 }
 
 /// DOM-INP-03: 軸をボタンとして読む

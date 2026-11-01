@@ -44,6 +44,8 @@ impl InputMap {
 pub struct SlotInput {
     /// 操作の押下（true）・離し（false）を起きた順に
     pub events: Vec<(usize, bool)>,
+    /// このフレームで押された物理入力（押した順。割り当ての無いものも。キー設定で使う）
+    pub sources: Vec<Source>,
     pub held: [bool; SLOTS],
     pub pressed: [bool; SLOTS],
 }
@@ -80,10 +82,9 @@ pub fn read_input(
                 plus: false,
             };
             let scratch = |s: &Source| {
-                matches!(
-                    map.bindings.slot_of(s),
-                    Some(SCRATCH_UP) | Some(SCRATCH_DOWN)
-                )
+                map.bindings
+                    .slots_of(s)
+                    .any(|i| i == SCRATCH_UP || i == SCRATCH_DOWN)
             };
             let (p, m) = match map.bindings.analog_scratch_ms {
                 Some(ms) if scratch(&plus) || scratch(&minus) => {
@@ -99,24 +100,25 @@ pub fn read_input(
         }
     }
     out.events.clear();
+    out.sources.clear();
     out.pressed = [false; SLOTS];
     for (src, down) in changes {
         if down {
             map.held.insert(src.clone());
+            out.sources.push(src.clone());
         } else {
             map.held.remove(&src);
         }
-        let Some(slot) = map.bindings.slot_of(&src) else {
-            continue;
-        };
-        let now_held = map.bindings.slots[slot]
-            .iter()
-            .any(|s| map.held.contains(s));
-        if now_held != map.slot_held[slot] {
-            map.slot_held[slot] = now_held;
-            out.events.push((slot, now_held));
-            if now_held {
-                out.pressed[slot] = true;
+        // 同じ物理入力をいくつかの操作に置いてもよい（LR2 と同じ）
+        let slots: Vec<usize> = map.bindings.slots_of(&src).collect();
+        for slot in slots {
+            let now_held = map.bindings.sources(slot).any(|s| map.held.contains(s));
+            if now_held != map.slot_held[slot] {
+                map.slot_held[slot] = now_held;
+                out.events.push((slot, now_held));
+                if now_held {
+                    out.pressed[slot] = true;
+                }
             }
         }
     }

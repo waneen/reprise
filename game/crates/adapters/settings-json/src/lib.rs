@@ -8,9 +8,11 @@
 //! | SJS-03 | 書かれていない項目は既定値、知らない項目は無視。操作の割り当ては書かれた操作だけ置き換える |
 //! | SJS-04 | JSON として読めない・値の種類が違う・知らない名前（ゲージ・HS-FIX・物理入力の種類）は `Parse` エラー |
 //! | SJS-05 | 選曲スキンは `select_skin`（パス。null・無しは None） |
+//! | SJS-06 | キー設定スキンは `keyconfig_skin`（パス。null・無しは None） |
+//! | SJS-07 | 操作の割り当ては `keys` に操作の名前（2P は `p2_` を付ける）ごとの配列で、配列の位置が割り当ての位置（LR2 の 16 か所。空いた位置は null。16 番目より後は無視） |
 use application::ports::{PortError, SettingsStore};
 use application::settings::Settings;
-use domain::input::{Source, SLOTS};
+use domain::input::{Side, Source, PLACES, SLOTS};
 use domain::play::{GaugeType, HsFix};
 use serde_json::{json, Map, Value};
 use std::path::PathBuf;
@@ -69,7 +71,10 @@ fn value_of<T: Copy>(table: &[(&str, T)], v: &Value, what: &str) -> Result<T, Po
         .ok_or_else(|| err(&format!("{what}: {s}")))
 }
 
-fn source_json(s: &Source) -> Value {
+fn source_json(s: &Option<Source>) -> Value {
+    let Some(s) = s else {
+        return Value::Null;
+    };
     match s {
         Source::Key(k) => json!({ "key": k }),
         Source::Button(b) => json!({ "button": b }),
@@ -77,18 +82,21 @@ fn source_json(s: &Source) -> Value {
     }
 }
 
-fn source_of(v: &Value) -> Result<Source, PortError> {
+fn source_of(v: &Value) -> Result<Option<Source>, PortError> {
+    if v.is_null() {
+        return Ok(None);
+    }
     let text = |k: &str| v.get(k).and_then(Value::as_str).map(String::from);
     if let Some(k) = text("key") {
-        Ok(Source::Key(k))
+        Ok(Some(Source::Key(k)))
     } else if let Some(b) = text("button") {
-        Ok(Source::Button(b))
+        Ok(Some(Source::Button(b)))
     } else if let Some(axis) = text("axis") {
         let plus = v
             .get("plus")
             .and_then(Value::as_bool)
             .ok_or_else(|| err("plus"))?;
-        Ok(Source::Axis { axis, plus })
+        Ok(Some(Source::Axis { axis, plus }))
     } else {
         Err(err("物理入力の種類"))
     }
@@ -97,15 +105,22 @@ fn source_of(v: &Value) -> Result<Source, PortError> {
 /// 設定 → JSON
 pub fn to_json(s: &Settings) -> Value {
     let o = &s.options;
-    let keys: Map<String, Value> = SLOT_NAMES
-        .iter()
-        .zip(&s.bindings.slots)
-        .map(|(n, v)| (n.to_string(), v.iter().map(source_json).collect()))
+    let b = &s.bindings;
+    let keys: Map<String, Value> = [(Side::P1, ""), (Side::P2, "p2_")]
+        .into_iter()
+        .flat_map(|(side, prefix)| {
+            let list = if side == Side::P1 { &b.slots } else { &b.p2 };
+            SLOT_NAMES
+                .iter()
+                .zip(list)
+                .map(move |(n, v)| (format!("{prefix}{n}"), v.iter().map(source_json).collect()))
+        })
         .collect();
     json!({
         "songs": s.songs,
         "skin": s.skin,
         "select_skin": s.select_skin,
+        "keyconfig_skin": s.keyconfig_skin,
         "skin_root": s.skin_root,
         "gauge": name_of(&GAUGES, s.gauge),
         "hi_speed": o.hi_speed,
@@ -137,6 +152,7 @@ pub fn from_json(v: &Value) -> Result<Settings, PortError> {
             "skin" if !v.is_null() => s.skin = Some(path(v)?),
             "skin_root" if !v.is_null() => s.skin_root = Some(path(v)?),
             "select_skin" if !v.is_null() => s.select_skin = Some(path(v)?),
+            "keyconfig_skin" if !v.is_null() => s.keyconfig_skin = Some(path(v)?),
             "gauge" => s.gauge = value_of(&GAUGES, v, "gauge")?,
             "hi_speed" => s.options.hi_speed = int(v, "hi_speed")?,
             "hs_fix" => s.options.hs_fix = value_of(&HS_FIX, v, "hs_fix")?,
@@ -149,14 +165,19 @@ pub fn from_json(v: &Value) -> Result<Settings, PortError> {
             }
             "keys" => {
                 let keys = v.as_object().ok_or_else(|| err("keys"))?;
-                for (i, name) in SLOT_NAMES.iter().enumerate() {
-                    if let Some(list) = keys.get(*name) {
-                        s.bindings.slots[i] = list
-                            .as_array()
-                            .ok_or_else(|| err(name))?
-                            .iter()
-                            .map(source_of)
-                            .collect::<Result<_, _>>()?;
+                for (side, prefix) in [(Side::P1, ""), (Side::P2, "p2_")] {
+                    for (i, name) in SLOT_NAMES.iter().enumerate() {
+                        let name = format!("{prefix}{name}");
+                        let Some(list) = keys.get(&name) else {
+                            continue;
+                        };
+                        let list = list.as_array().ok_or_else(|| err(&name))?;
+                        for p in 0..PLACES {
+                            s.bindings.set(side, i, p, None);
+                        }
+                        for (p, v) in list.iter().enumerate().take(PLACES) {
+                            s.bindings.set(side, i, p, source_of(v)?);
+                        }
                     }
                 }
             }

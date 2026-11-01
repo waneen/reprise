@@ -3,7 +3,9 @@
 //! 操作: 皿（上・下）か ↑↓ で選び、鍵盤 1/3/5/7・Enter・→ で決定、
 //! 鍵盤 6 でオートプレイ、鍵盤 2・← で戻る。最初の一覧で Esc なら終了。
 //! スキンで描くときは LR2 と同じく、一覧が動くアニメーション・マウスのホイール・マウスでのバーの選択・BUTTON のクリックも受ける
+//! （BUTTON 13 でキー設定画面へ）
 use crate::input::SlotInput;
+use crate::keyconfig_scene::KeyConfigScreen;
 use crate::skin_render::{self, Pixels, SkinDraw, SkinGfx};
 use crate::{list_font, PlayRequest, Scene, ScoreDb, SettingsRes};
 use application::select_skin::{SelectBar, SelectSkin};
@@ -281,7 +283,7 @@ fn list_bars(library: &Library, state: &SelectState, db: &ScoreDb) -> Vec<Select
 }
 
 /// マウスの位置（スキンの座標）
-fn mouse_pos(
+pub(crate) fn mouse_pos(
     windows: &Query<&Window>,
     cams: &Query<(&Camera, &GlobalTransform)>,
     res: (u32, u32),
@@ -307,6 +309,7 @@ pub fn skin_input(
     cams: Query<(&Camera, &GlobalTransform)>,
     db: Res<ScoreDb>,
     mut sel: ResMut<Selection>,
+    keyconfig: Option<Res<KeyConfigScreen>>,
     mut next: ResMut<NextState<Scene>>,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -354,7 +357,12 @@ pub fn skin_input(
             if let Some((x, y)) = pos {
                 for c in button_clicks(&sk.skin, &sc.state, x, y, -1) {
                     match c.action {
-                        // 13 キー設定・14 スキン選択: 画面は次の PR で作るので、今はクリックを受けても何もしない
+                        // 13 キー設定（LR2 `is_clicked_keyconfig`）。キー設定スキンが無ければ何もしない（LR2 にも代わりの画面は無い）
+                        13 if keyconfig.is_some() => {
+                            next.set(Scene::KeyConfig);
+                            return;
+                        }
+                        // 14 スキン選択: 画面がまだ無いのでクリックを受けても何もしない
                         13 | 14 => {}
                         // 15 プレイ・16 オートプレイ（曲を選んでいるときだけ）
                         15 | 16 if matches!(sel.state.current(), Some(Bar::Song(_))) => {
