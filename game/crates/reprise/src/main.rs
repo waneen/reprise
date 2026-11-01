@@ -23,7 +23,7 @@ use bevy::text::{FontSize, FontSource, FontWeight, TextLayoutInfo};
 use bevy::transform::TransformSystems;
 use bevy::window::{PresentMode, WindowResolution};
 use chart_loader::DecoderLoader;
-use domain::chart::{Chart, Lane, SoundId};
+use domain::chart::{Chart, ImageId, Lane, SoundId};
 use domain::play::{GaugeType, Judge, PlayEvent};
 use domain::random::LegacyMt;
 use domain::skin::lr2::{draw_play, pixels_per_beat, Draw, Quad, TextRun};
@@ -200,6 +200,25 @@ fn sound_ms(bytes: &Arc<[u8]>) -> i64 {
     (n * 1000 / (ch * rate).max(1)) as i64
 }
 
+/// 譜面の BGA 画像を読み込む（LR2 と同じく、アルファの無い画像は黒を透明にする）
+fn load_bga(chart: &Chart, chart_path: &Path) -> Vec<(ImageId, Pixels)> {
+    let dir = chart_path.parent().unwrap_or(Path::new("."));
+    chart
+        .images
+        .iter()
+        .filter_map(|(id, name)| {
+            let Some(p) = chart_loader::find_image_file(dir, name) else {
+                eprintln!("画像が見つからない: {name}");
+                return None;
+            };
+            load_image(&p, Some([0, 0, 0]))
+                .map_err(|e| eprintln!("画像を読めない: {e}"))
+                .ok()
+                .map(|px| (*id, px))
+        })
+        .collect()
+}
+
 /// 譜面と音を読み込む
 fn load(path: &Path) -> Result<(Chart, Sounds), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -290,9 +309,17 @@ fn main() {
     };
     let title = format!("reprise - {} [{}]", chart.meta.title, chart.meta.artist);
     let (skin_play, pending_images) = match skin {
-        Some((skin, images)) => {
+        Some((skin, mut images)) => {
             let lengths: BTreeMap<SoundId, i64> =
                 sounds.iter().map(|(id, b)| (*id, sound_ms(b))).collect();
+            // 描画側の画像 = スキンの画像、BGA の画像、単色用の白 1 画素 の順
+            let mut bga_images = BTreeMap::new();
+            for (id, px) in load_bga(&chart, &chart_path) {
+                bga_images.insert(id, images.len() as u32);
+                images.push(Some(px));
+            }
+            let white = images.len() as u32;
+            images.push(Some((1, 1, vec![255; 4])));
             let play = PlaySkin::new(
                 &chart,
                 &session,
@@ -300,6 +327,7 @@ fn main() {
                 skin.timing,
                 &skin.options,
                 &lengths,
+                &bga_images,
             );
             let sizes = images
                 .iter()
@@ -314,6 +342,7 @@ fn main() {
                     sizes,
                     rng: LegacyMt::new(seed()),
                     texts: vec![],
+                    white,
                 }),
                 images,
             )
@@ -381,6 +410,8 @@ struct SkinPlay {
     rng: LegacyMt,
     /// システムフォントの文字列の実体（使い回す）
     texts: Vec<Entity>,
+    /// 単色の四角形に使う白 1 画素の画像の番号
+    white: u32,
 }
 
 #[derive(Resource)]
@@ -648,6 +679,16 @@ fn draw_skin(
     for d in draws {
         match d {
             Draw::Quad(q) => quads.push(q),
+            Draw::Fill(f) => quads.push(Quad {
+                image: sp.white,
+                src: [0.0, 0.0, 1.0, 1.0],
+                dst: f.dst,
+                argb: f.argb,
+                angle: 0.0,
+                center: 0,
+                blend: f.blend,
+                filter: false,
+            }),
             Draw::Text(run) => {
                 flush(&mut quads, &mut z, &mut commands);
                 runs.push((run, z));

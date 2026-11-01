@@ -111,7 +111,7 @@ fn quads(
         .into_iter()
         .filter_map(|d| match d {
             Draw::Quad(q) => Some(q),
-            Draw::Text(_) => None,
+            _ => None,
         })
         .collect()
 }
@@ -552,6 +552,7 @@ fn dom_skd_12_text(
     .map(|d| match d {
         Draw::Quad(q) => format!("quad {} {:?} {}", q.image, q.dst, q.angle),
         Draw::Text(t) => format!("text {} {} {:?} {}", t.font.size, t.text, t.dst, t.argb[0]),
+        Draw::Fill(f) => format!("fill {:?}", f.dst),
     })
     .collect();
     assert_eq!(got, want);
@@ -599,4 +600,59 @@ fn dom_skd_13_image_font_layout(
         ..Default::default()
     };
     assert!(layout_text(&empty, "A", dst, align).is_empty());
+}
+
+fn bga_size(i: u32) -> Option<(u32, u32)> {
+    match i {
+        1 => Some((256, 256)),
+        2 => Some((128, 64)),
+        3 => Some((512, 512)),
+        _ => None,
+    }
+}
+fn layer(image: u32, backbox: bool) -> BgaView {
+    BgaView { image, backbox }
+}
+
+/// DOM-SKD-14: BGA は タイマー 41 が動いていて条件を満たすとき、層ごとに画像全体を描く。幅・高さが 256 未満の画像は縮めて
+/// 横は中央・縦は上に寄せる。1 層目は後ろに α だけ DST の黒（回していなければ）、2 層目以降はその上
+#[rstest]
+#[case::base(vec![layer(1, true)], 0.0, &[(0, 0), (41, 10)], vec![], vec!["fill [100.0, 50.0, 256.0, 256.0] 200", "quad 1 [100.0, 50.0, 256.0, 256.0] [0.0, 0.0, 256.0, 256.0]"])]
+#[case::small_centered(vec![layer(2, false)], 0.0, &[(0, 0), (41, 10)], vec![], vec!["quad 2 [164.0, 50.0, 128.0, 64.0] [0.0, 0.0, 128.0, 64.0]"])]
+#[case::large_stretched(vec![layer(3, false)], 0.0, &[(0, 0), (41, 10)], vec![], vec!["quad 3 [100.0, 50.0, 256.0, 256.0] [0.0, 0.0, 512.0, 512.0]"])]
+#[case::unloaded(vec![layer(4, true)], 0.0, &[(0, 0), (41, 10)], vec![], vec![])]
+#[case::layer_above_base(vec![layer(2, false), layer(1, true)], 0.0, &[(0, 0), (41, 10)], vec![], vec!["fill [100.0, 50.0, 256.0, 256.0] 200", "quad 1 [100.0, 50.0, 256.0, 256.0] [0.0, 0.0, 256.0, 256.0]", "quad 2 [164.0, 50.0, 128.0, 64.0] [0.0, 0.0, 128.0, 64.0]"])]
+#[case::rotated_no_box(vec![layer(1, true)], 30.0, &[(0, 0), (41, 10)], vec![], vec!["quad 1 [100.0, 50.0, 256.0, 256.0] [0.0, 0.0, 256.0, 256.0]"])]
+#[case::before_play(vec![layer(1, true)], 0.0, &[(0, 0)], vec![], vec![])]
+#[case::condition_false(vec![layer(1, true)], 0.0, &[(0, 0), (41, 10)], vec![OptionId(33)], vec![])]
+fn dom_skd_14_bga(
+    #[case] bga: Vec<BgaView>,
+    #[case] angle: f32,
+    #[case] timers: &[(i32, i64)],
+    #[case] conditions: Vec<OptionId>,
+    #[case] want: Vec<&str>,
+) {
+    let mut e = el(
+        other("BGA", 0),
+        src([0, 0, 1, 1], (1, 1), 0, 0),
+        0,
+        vec![Keyframe {
+            angle,
+            ..kf(0, [100.0, 50.0, 256.0, 256.0], 200, 0)
+        }],
+    );
+    e.conditions = conditions;
+    let view = PlayView {
+        bga,
+        ..Default::default()
+    };
+    let got: Vec<String> = draw_play(&skin(vec![e]), &st(timers), &view, &bga_size)
+        .into_iter()
+        .map(|d| match d {
+            Draw::Quad(q) => format!("quad {} {:?} {:?}", q.image, q.dst, q.src),
+            Draw::Fill(f) => format!("fill {:?} {}", f.dst, f.argb[0]),
+            Draw::Text(_) => "text".into(),
+        })
+        .collect();
+    assert_eq!(got, want);
 }

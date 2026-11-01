@@ -2,7 +2,7 @@
 use super::*;
 use crate::play::{KeyId, KeyInput};
 use crate::ports::AudioOutput;
-use domain::chart::{Beat, ChartHash, ChartMeta, Lane, Note, SoundId};
+use domain::chart::{Beat, ChartHash, ChartMeta, ImageId, Lane, Note, SoundId};
 use rstest::rstest;
 
 struct Mute;
@@ -79,7 +79,7 @@ fn run_with(
     let c = chart(measure0);
     let input = KeyInput::new([(0, Lane(0)), (1, Lane(1)), (2, Lane(2))]);
     let mut s = PlaySession::new(&c, gauge, input).unwrap();
-    let mut k = PlaySkin::new(&c, &s, gauge, TIMING, &[901], sound_ms);
+    let mut k = PlaySkin::new(&c, &s, gauge, TIMING, &[901], sound_ms, &BTreeMap::new());
     for (t, ev) in frames {
         let out = s.frame(*t, ev, &mut Mute);
         k.update(*t, &s, &out);
@@ -112,9 +112,9 @@ const NONE: &[(KeyId, bool)] = &[];
 
 /// APP-SKN-01: タイマー 0 は画面の開始、1 は `#STARTINPUT` を過ぎてから、40 は `#LOADSTART`+`#LOADEND`、
 /// 41 は譜面の先頭（さらに `#PLAYSTART` 後）から。変わらない条件:
-/// 32（オートでない）・40（BGA なし）・42/43（GROOVE 系/HARD 系）・81（読み込み済み）・160..164（鍵盤数）・170/171・172/173（LN）・スキン設定
+/// 32（オートでない）・41（BGA あり）・42/43（GROOVE 系/HARD 系）・81（読み込み済み）・160..164（鍵盤数）・170/171・172/173（LN）・スキン設定
 #[rstest]
-#[case::before_play(GaugeType::Groove, &[(-1500, NONE)], vec![Timer(0, Some(500)), Timer(1, Some(0)), Timer(40, None), Timer(41, None), Op(32, true), Op(33, false), Op(40, true), Op(42, true), Op(43, false), Op(81, true), Op(160, true), Op(161, false), Op(170, true), Op(173, true), Op(172, false), Op(901, true), Op(900, false)])]
+#[case::before_play(GaugeType::Groove, &[(-1500, NONE)], vec![Timer(0, Some(500)), Timer(1, Some(0)), Timer(40, None), Timer(41, None), Op(32, true), Op(33, false), Op(40, false), Op(41, true), Op(42, true), Op(43, false), Op(81, true), Op(160, true), Op(161, false), Op(170, true), Op(173, true), Op(172, false), Op(901, true), Op(900, false)])]
 #[case::before_input(GaugeType::Groove, &[(-1800, NONE)], vec![Timer(0, Some(200)), Timer(1, None)])]
 #[case::ready(GaugeType::Groove, &[(-1500, NONE), (-500, NONE)], vec![Timer(1, Some(1000)), Timer(40, Some(500)), Timer(41, None)])]
 #[case::playing(GaugeType::Groove, &[(-1500, NONE), (100, NONE)], vec![Timer(0, Some(2100)), Timer(40, Some(1100)), Timer(41, Some(100))])]
@@ -270,7 +270,15 @@ fn app_skn_09_turntable(#[case] dir: i32, #[case] t: i64, #[case] angle: f32) {
     let c = chart(None);
     let input = KeyInput::new([(0, Lane(0))]);
     let s = PlaySession::new(&c, GaugeType::Groove, input).unwrap();
-    let mut k = PlaySkin::new(&c, &s, GaugeType::Groove, TIMING, &[], &BTreeMap::new());
+    let mut k = PlaySkin::new(
+        &c,
+        &s,
+        GaugeType::Groove,
+        TIMING,
+        &[],
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    );
     k.update(t.min(0), &s, &[]);
     k.set_scratch(dir);
     k.update(t.max(0), &s, &[]);
@@ -289,8 +297,72 @@ fn app_skn_10_texts(#[case] subtitle: &str, #[case] want: Vec<(i32, Option<&str>
     c.meta.artist = "AR".into();
     let input = KeyInput::new([(0, Lane(0))]);
     let s = PlaySession::new(&c, GaugeType::Groove, input).unwrap();
-    let k = PlaySkin::new(&c, &s, GaugeType::Groove, TIMING, &[], &BTreeMap::new());
+    let k = PlaySkin::new(
+        &c,
+        &s,
+        GaugeType::Groove,
+        TIMING,
+        &[],
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    );
     for (id, w) in want {
         assert_eq!(k.text(id), w, "text {id}");
     }
+}
+
+/// APP-SKN-11: BGA は譜面の時刻（≤ 今）で層を切り替える。POOR 層の初期値は 0 番の画像。BD 以下から 500ms 未満は POOR 層だけ
+/// （後ろの黒なし）、それ以外は 1 層目（後ろに黒）・2 層目。読めない画像は描かない。
+/// 0.5 拍に 1 層目 = 1、1.5 拍に 2 層目 = 2、2.5 拍に POOR 層 = 4、3.5 拍に 1 層目 = 3（読めない）
+#[rstest]
+#[case::nothing_yet(true, &[(300, NONE)], vec![])]
+#[case::base(true, &[(500, NONE)], vec![(11, true)])]
+#[case::base_and_layer(true, &[(1000, PRESS1), (1100, UP1), (1600, NONE)], vec![(11, true), (12, false)])]
+#[case::poor_default_image(true, &[(600, NONE), (1150, PRESS1), (1200, NONE)], vec![(10, false)])]
+#[case::poor_expires(true, &[(600, NONE), (1150, PRESS1), (1650, NONE)], vec![(11, true), (12, false)])]
+#[case::poor_changed(true, &[(2150, PRESS1), (2600, NONE)], vec![(14, false)])]
+#[case::no_poor_image(false, &[(600, NONE), (1150, PRESS1), (1200, NONE)], vec![(11, true)])]
+#[case::unloaded_base(true, &[(1000, PRESS1), (1100, UP1), (2000, PRESS1), (2100, UP1), (3000, PRESS2), (3600, NONE)], vec![(12, false)])]
+fn app_skn_11_bga(
+    #[case] with_image0: bool,
+    #[case] frames: &[(i64, &[(KeyId, bool)])],
+    #[case] want: Vec<(u32, bool)>,
+) {
+    let mut c = chart(None);
+    c.bga = vec![
+        (Beat(0.5), BgaLayer::Base, ImageId(1)),
+        (Beat(1.5), BgaLayer::Layer, ImageId(2)),
+        (Beat(2.5), BgaLayer::Poor, ImageId(4)),
+        (Beat(3.5), BgaLayer::Base, ImageId(3)),
+    ];
+    let mut images: BTreeMap<ImageId, u32> = [(1, 11), (2, 12), (4, 14)]
+        .into_iter()
+        .map(|(i, n)| (ImageId(i), n))
+        .collect();
+    if with_image0 {
+        images.insert(ImageId(0), 10);
+    }
+    let input = KeyInput::new([(0, Lane(0)), (1, Lane(1)), (2, Lane(2))]);
+    let mut s = PlaySession::new(&c, GaugeType::Groove, input).unwrap();
+    let mut k = PlaySkin::new(
+        &c,
+        &s,
+        GaugeType::Groove,
+        TIMING,
+        &[],
+        &BTreeMap::new(),
+        &images,
+    );
+    for (t, ev) in frames {
+        let out = s.frame(*t, ev, &mut Mute);
+        k.update(*t, &s, &out);
+    }
+    let got: Vec<(u32, bool)> = k
+        .view(&s, 200.0, 4.0, 0)
+        .bga
+        .iter()
+        .map(|b| (b.image, b.backbox))
+        .collect();
+    assert_eq!(got, want);
+    assert!(k.option(41) && !k.option(40));
 }

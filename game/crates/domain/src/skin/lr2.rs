@@ -1,5 +1,5 @@
 //! LR2 のプレイ画面のスキン描画（DOM-SKD-*）。どの要素を・どこに・どの切り出しで描くかを決め、
-//! 描画 API には依存しない四角形とシステムフォントの文字列の列（[`Draw`]）を返す。OpenLR2 の `LR2_skindraw.cpp`・`Main.cpp`・
+//! 描画 API には依存しない四角形・単色の四角形・システムフォントの文字列の列（[`Draw`]）を返す。OpenLR2 の `LR2_skindraw.cpp`・`Main.cpp`・
 //! `Scene04_Play.cpp`・`LR2_skinload.cpp` を仕様として参照した（コードは転載していない）。
 use super::{Blend, Element, ElementKind, ImageFont, Keyframe, Skin, SourceRect, SystemFont};
 
@@ -38,6 +38,17 @@ pub struct PlayView {
     pub notes: Vec<NoteView>,
     /// 小節線（判定までの拍数）
     pub lines: Vec<f64>,
+    /// BGA の層（奥から順）
+    pub bga: Vec<BgaView>,
+}
+
+/// 描く BGA の層
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BgaView {
+    /// 画像の番号（[`draw_play`] の `image_size` と同じ番号）
+    pub image: u32,
+    /// 後ろに黒い四角形を描く（LR2 の 1 層目）
+    pub backbox: bool,
 }
 
 /// 描くノーツ
@@ -78,6 +89,18 @@ pub enum Draw {
     Quad(Quad),
     /// システムフォントの文字列（大きさの合わせ方は [`TextRun`]）
     Text(TextRun),
+    /// 単色の四角形（BGA の後ろの黒）
+    Fill(Fill),
+}
+
+/// 単色の四角形
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Fill {
+    /// x, y, w, h
+    pub dst: [f32; 4],
+    /// a, r, g, b
+    pub argb: [u8; 4],
+    pub blend: Blend,
 }
 
 /// システムフォントで描く文字列。描く側は LR2 と同じく、文字列の幅 `width`（フォントの大きさで測る）から
@@ -574,6 +597,9 @@ pub fn draw_play(
                 "NOWJUDGE_1P" if playing && view.judge == Some(*index as usize) => {
                     judge_combo(&mut cx, e, view)
                 }
+                "BGA" if st.timer(41).is_some_and(|t| t >= 0) && ops_true(st, e) => {
+                    bga(&mut cx, e, view)
+                }
                 _ => {}
             },
             ElementKind::Text {
@@ -591,6 +617,49 @@ pub fn draw_play(
     }
     cx.out.sort_by_key(|s| (s.order, s.sub));
     cx.out.into_iter().map(|s| s.d).collect()
+}
+
+/// DOM-SKD-14: BGA。層ごとに画像全体を DST に描く。画像の幅が 256 未満なら 幅 × 画像の幅 / 256 にして
+/// 中央へ寄せ、高さが 256 未満なら 高さ × 画像の高さ / 256（上揃え）。1 層目は回していなければ後ろに DST の α の黒を描き、
+/// 2 層目以降はその上（描画順キーの次）に描く
+fn bga(cx: &mut Ctx<'_>, e: &Element, view: &PlayView) {
+    let Some(pose) = pose_at(e, cx.st.timer(e.timer.0)) else {
+        return;
+    };
+    for b in &view.bga {
+        let Some((iw, ih)) = (cx.image_size)(b.image) else {
+            continue;
+        };
+        let mut p = pose;
+        let [x, _, w, h] = &mut p.dst;
+        if iw < 256 {
+            *x += *w / 256.0 * (256.0 - iw as f32) * 0.5;
+            *w *= iw as f32 / 256.0;
+        }
+        if ih < 256 {
+            *h *= ih as f32 / 256.0;
+        }
+        let sub = if b.backbox { 0 } else { 1 };
+        let Some(q) = quad(b.image, [0.0, 0.0, iw as f32, ih as f32], &p) else {
+            continue;
+        };
+        if b.backbox && q.angle == 0.0 {
+            cx.out.push(Sorted {
+                order: e.order,
+                sub,
+                d: Draw::Fill(Fill {
+                    dst: q.dst,
+                    argb: [q.argb[0], 0, 0, 0],
+                    blend: q.blend,
+                }),
+            });
+        }
+        cx.out.push(Sorted {
+            order: e.order,
+            sub,
+            d: Draw::Quad(q),
+        });
+    }
 }
 
 /// DOM-SKD-12: 文字列。DST の幅・高さが 0 なら描かない。同じ番号の画像フォント（大きさ > 0）があればそれで、
