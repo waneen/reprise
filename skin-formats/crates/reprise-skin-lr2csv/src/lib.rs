@@ -32,7 +32,10 @@
 //! | SKN-CUS-02 | 本文の `#CUSTOMFILE` で選択が `RANDOM` なら、その場で 1 回だけ乱択して以後に使う |
 //! | SKN-IMG-01 | `#IMAGE,パス`。`CONTINUE` は継続、解決できなければ Missing + 診断 |
 //! | SKN-IMG-02 | パス中の `\` は `/` にする |
-//! | SKN-FNT-01 | `#FONT,大きさ,太さ,種類` はシステムフォント、`#LR2FONT,パス` はビットマップフォント |
+//! | SKN-FNT-01 | `#FONT,大きさ,太さ,種類` はシステムフォントとして `fonts` に、`#LR2FONT,パス` は画像フォントとして `image_fonts` に、それぞれ別に番号を振って並べる |
+//! | SKN-FNT-02 | `#LR2FONT` は `.lr2font` を読み、画像はフォントファイルと同じフォルダから探す。フォント・画像が無ければ Missing + 診断 |
+//! | SKN-LR2F-01 | `.lr2font`: `#` で始まる行の 2 文字目で `#S,高さ` `#M,間隔` `#T,番号,ファイル名` `#R,文字番号,画像,x,y,w,h` を見分ける。同じ番号・文字は後の行が勝つ |
+//! | SKN-LR2F-02 | `.lr2font` の文字番号: 0..=255 はその 1 バイト、256..=8126 は +32832、8127..=15306 は +49281 した Shift_JIS の 2 バイト。それ以外は捨てる |
 //! | SKN-INC-01 | `#INCLUDE,パス` はその場に展開する。`#IF` の状態は独立、条件（`#SETOPTION`）は共有。深さ 16 まで |
 //! | SKN-SRC-01 | `#SRC_x,添字,画像,x,y,w,h,分割x,分割y,周期,タイマー,引数×5` で要素を作る（分割は最小 1、x/y は負なら 0） |
 //! | SKN-SRC-02 | 種別ごとの引数: NUMBER(値,揃え,桁) SLIDER(向き,範囲,値,無効) BARGRAPH(値,向き) BUTTON(動作,クリック,パネル,加算のみ) |
@@ -49,6 +52,7 @@ use reprise_skin_core::*;
 use std::path::Path;
 
 mod csv;
+pub mod lr2font;
 mod parse;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

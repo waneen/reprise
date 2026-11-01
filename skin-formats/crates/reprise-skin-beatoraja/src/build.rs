@@ -320,6 +320,7 @@ impl<'a> Loader<'a> {
             header: header.clone(),
             images: vec![],
             fonts: vec![],
+            image_fonts: vec![],
             elements: vec![],
             directives: vec![],
             diagnostics: vec![],

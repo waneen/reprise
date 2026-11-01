@@ -6,8 +6,8 @@
 #
 # 事前に `rustup target add <target>` が必要。ターゲットごとの追加の準備:
 # - aarch64-unknown-linux-gnu（Linux x86_64 上）: gcc-aarch64-linux-gnu と、Bevy が使う
-#   ALSA・udev・Wayland・xkbcommon の arm64 版（Debian/Ubuntu なら dpkg --add-architecture arm64 のうえで
-#   libasound2-dev:arm64 libudev-dev:arm64 libwayland-dev:arm64 libxkbcommon-dev:arm64）
+#   ALSA・udev・Wayland・xkbcommon・fontconfig の arm64 版（Debian/Ubuntu なら dpkg --add-architecture arm64 のうえで
+#   libasound2-dev:arm64 libudev-dev:arm64 libwayland-dev:arm64 libxkbcommon-dev:arm64 libfontconfig-dev:arm64）
 # - aarch64-pc-windows-msvc（Windows 上）: Visual Studio の ARM64 ビルドツール
 # - x86_64-apple-darwin / aarch64-apple-darwin（macOS 上）: 追加の準備なし
 set -euo pipefail

@@ -276,3 +276,21 @@ fn app_skn_09_turntable(#[case] dir: i32, #[case] t: i64, #[case] angle: f32) {
     k.update(t.max(0), &s, &[]);
     assert_eq!(k.turntable(1), angle);
 }
+
+/// APP-SKN-10: 文字列 10 題名・11 副題・12 題名 + 空白 + 副題・13 ジャンル・14 アーティスト・15 副アーティスト。空は無し
+#[rstest]
+#[case::with_subtitle("[A]", vec![(10, Some("T")), (11, Some("[A]")), (12, Some("T [A]")), (13, Some("G")), (14, Some("AR")), (15, None), (16, None)])]
+#[case::no_subtitle("", vec![(11, None), (12, Some("T"))])]
+fn app_skn_10_texts(#[case] subtitle: &str, #[case] want: Vec<(i32, Option<&str>)>) {
+    let mut c = chart(None);
+    c.meta.title = "T".into();
+    c.meta.subtitle = subtitle.into();
+    c.meta.genre = "G".into();
+    c.meta.artist = "AR".into();
+    let input = KeyInput::new([(0, Lane(0))]);
+    let s = PlaySession::new(&c, GaugeType::Groove, input).unwrap();
+    let k = PlaySkin::new(&c, &s, GaugeType::Groove, TIMING, &[], &BTreeMap::new());
+    for (id, w) in want {
+        assert_eq!(k.text(id), w, "text {id}");
+    }
+}

@@ -13,6 +13,7 @@
 //! | ADP-SK-08 | 読み込み終了時点で真の条件を昇順で写す |
 //! | ADP-SK-09 | 抜き色: 最後の `#TRANSCOLOR,r,g,b`（LR2 が受け付ける綴り違い `TRANSCLOLR`/`TRANSCLOLOR` も）、無ければローダの既定 |
 //! | ADP-SK-10 | 場面の時間: `STARTINPUT`（beatoraja は `INPUT`）・`LOADSTART`・`LOADEND`・`PLAYSTART`・`FADEOUT`・`CLOSE`（`SKIP` も）の第 1 引数。後の行が勝ち、無ければ 0 |
+//! | ADP-SK-11 | フォント: `#FONT` はシステムフォント（それ以外の種類は None）。画像フォントの画像は `images` の後ろに足し、文字はその添字を指す。画像が無い文字は捨て、読めなかったフォントは None |
 use application::ports::{PortError, SkinLoader};
 use domain::{random::LegacyMt, skin as d};
 use reprise_skin_core as sc;
@@ -106,7 +107,7 @@ impl FileResolver for FsResolver<'_> {
 }
 
 // ---------------------------------------------------------------------------
-// 写像（ADP-SK-01..04, 08..10）
+// 写像（ADP-SK-01..04, 08..11）
 // ---------------------------------------------------------------------------
 
 pub fn scene_kind(kind: i32) -> d::SceneKind {
@@ -228,20 +229,72 @@ pub fn map_skin(doc: sc::SkinDocument, default_color_key: Option<[u8; 3]>) -> d:
             _ => {}
         }
     }
+    let image = |i: sc::ImageEntry| match i {
+        sc::ImageEntry::File(p) => Some(p),
+        sc::ImageEntry::Continue | sc::ImageEntry::Missing(_) => None,
+    };
+    let mut images: Vec<Option<PathBuf>> = doc.images.into_iter().map(image).collect();
+    // ADP-SK-11: フォント
+    let fonts = doc
+        .fonts
+        .iter()
+        .map(|f| match *f {
+            sc::FontEntry::System {
+                size,
+                thickness,
+                kind,
+            } => Some(d::SystemFont {
+                size,
+                thickness,
+                kind,
+            }),
+            _ => None,
+        })
+        .collect();
+    let image_fonts = doc
+        .image_fonts
+        .into_iter()
+        .map(|f| {
+            let sc::ImageFontEntry::Loaded(f) = f else {
+                return None;
+            };
+            let mut ids = std::collections::BTreeMap::new();
+            for (id, entry) in f.textures {
+                if let Some(p) = image(entry) {
+                    ids.insert(id, images.len() as u32);
+                    images.push(Some(p));
+                }
+            }
+            let glyphs = f
+                .glyphs
+                .iter()
+                .filter_map(|g| {
+                    let image = *ids.get(&g.texture)?;
+                    Some((
+                        g.ch,
+                        d::FontGlyph {
+                            image,
+                            rect: g.rect,
+                        },
+                    ))
+                })
+                .collect();
+            Some(d::ImageFont {
+                size: f.size,
+                margin: f.margin,
+                glyphs,
+            })
+        })
+        .collect();
     d::Skin {
         timing,
         color_key,
+        fonts,
+        image_fonts,
         options: doc.options.into_iter().collect(),
         scene: scene_kind(doc.header.kind),
         resolution: doc.header.resolution,
-        images: doc
-            .images
-            .into_iter()
-            .map(|i| match i {
-                sc::ImageEntry::File(p) => Some(p),
-                sc::ImageEntry::Continue | sc::ImageEntry::Missing(_) => None,
-            })
-            .collect(),
+        images,
         elements: doc
             .elements
             .iter()

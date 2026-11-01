@@ -1,5 +1,6 @@
 //! 記法非依存のスキンモデル（LR2 csv / beatoraja json・lua を共通化した、ゲームが使う形）。
 //! 「どの条件で・どのタイマーで・何を・どう補間して出すか」の宣言だけを持つ。
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 pub mod lr2;
@@ -24,6 +25,37 @@ pub struct Skin {
     /// 抜き色（アルファの無い画像でこの色を透明にする）
     pub color_key: Option<[u8; 3]>,
     pub timing: SceneTiming,
+    /// システムフォント（LR2 の `#FONT`。使えないものは None）
+    pub fonts: Vec<Option<SystemFont>>,
+    /// 画像フォント（LR2 の `#LR2FONT`。`fonts` とは別の番号。読めなかったものは None）
+    pub image_fonts: Vec<Option<ImageFont>>,
+}
+
+/// システムフォント（LR2 `#FONT,大きさ,太さ,種類`）
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SystemFont {
+    pub size: i32,
+    pub thickness: i32,
+    pub kind: i32,
+}
+
+/// 画像フォント（LR2 の `.lr2font`）
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImageFont {
+    /// 文字の基準の高さ
+    pub size: i32,
+    /// 文字の間隔
+    pub margin: i32,
+    pub glyphs: BTreeMap<char, FontGlyph>,
+}
+
+/// 画像フォントの 1 文字
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FontGlyph {
+    /// [`Skin::images`] の添字
+    pub image: u32,
+    /// x, y, w, h
+    pub rect: [i32; 4],
 }
 
 /// 場面の時間（ms、場面の開始から）。LR2 の `#STARTINPUT` `#LOADSTART` `#LOADEND` `#PLAYSTART` `#FADEOUT` `#CLOSE`

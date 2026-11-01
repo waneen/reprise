@@ -16,7 +16,7 @@ pub struct ConditionRef(pub i32);
 /// [`SkinDocument::images`] の添字
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ImageRef(pub u32);
-/// [`SkinDocument::fonts`] の添字
+/// [`SkinDocument::fonts`]（LR2 ではさらに [`SkinDocument::image_fonts`]）の添字
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct FontRef(pub u32);
 
@@ -105,9 +105,37 @@ pub enum FontEntry {
         thickness: i32,
         kind: i32,
     },
-    Bitmap(PathBuf),
     /// フォントファイル（TTF やビットマップ等。種類の判別は利用側）
     File(PathBuf),
+    Missing(String),
+}
+
+/// 画像フォント（LR2 の `.lr2font`）
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ImageFont {
+    /// 文字の基準の高さ（ピクセル）
+    pub size: i32,
+    /// 文字の間隔（ピクセル）
+    pub margin: i32,
+    /// 画像（フォント内の番号, 画像）
+    pub textures: Vec<(i32, ImageEntry)>,
+    pub glyphs: Vec<Glyph>,
+}
+
+/// 画像フォントの 1 文字
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Glyph {
+    pub ch: char,
+    /// [`ImageFont::textures`] のフォント内の番号
+    pub texture: i32,
+    /// x, y, w, h
+    pub rect: [i32; 4],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ImageFontEntry {
+    Loaded(ImageFont),
+    /// 見つからなかった（元のパス）
     Missing(String),
 }
 
@@ -123,6 +151,8 @@ pub struct SkinDocument {
     pub header: SkinHeader,
     pub images: Vec<ImageEntry>,
     pub fonts: Vec<FontEntry>,
+    /// 画像フォント（LR2 の `#LR2FONT`。`#FONT` とは別に番号を振る）
+    pub image_fonts: Vec<ImageFontEntry>,
     pub elements: Vec<Element>,
     pub directives: Vec<Directive>,
     pub diagnostics: Vec<Diagnostic>,

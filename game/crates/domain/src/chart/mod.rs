@@ -116,6 +116,7 @@ pub struct ChartMeta {
     pub title: String,
     pub subtitle: String,
     pub artist: String,
+    pub subartist: String,
     pub genre: String,
     pub initial_bpm: Option<f64>,
     pub level: Option<i32>,

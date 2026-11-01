@@ -11,18 +11,22 @@ use application::play_skin::PlaySkin;
 use application::ports::{AudioOutput, ChartLoader, ScoreImporter, SkinLoader};
 use bevy::asset::RenderAssetUsages;
 use bevy::audio::AudioSource;
+use bevy::camera::visibility::NoFrustumCulling;
 use bevy::camera::{OrthographicProjection, Projection, ScalingMode};
 use bevy::image::ImageSampler;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::sprite::{update_text2d_layout, Anchor};
+use bevy::text::{FontSize, FontSource, FontWeight, TextLayoutInfo};
+use bevy::transform::TransformSystems;
 use bevy::window::{PresentMode, WindowResolution};
 use chart_loader::DecoderLoader;
 use domain::chart::{Chart, Lane, SoundId};
 use domain::play::{GaugeType, Judge, PlayEvent};
 use domain::random::LegacyMt;
-use domain::skin::lr2::{draw_play, pixels_per_beat};
+use domain::skin::lr2::{draw_play, pixels_per_beat, Draw, Quad, TextRun};
 use domain::skin::{SceneKind, Skin};
 use skin_loader::DecoderSkinLoader;
 use skin_render::{SkinMaterial, SkinRenderPlugin};
@@ -309,6 +313,7 @@ fn main() {
                     materials: HashMap::new(),
                     sizes,
                     rng: LegacyMt::new(seed()),
+                    texts: vec![],
                 }),
                 images,
             )
@@ -354,6 +359,12 @@ fn main() {
             )
                 .chain(),
         )
+        .add_systems(
+            PostUpdate,
+            place_text
+                .after(update_text2d_layout)
+                .before(TransformSystems::Propagate),
+        )
         .run();
 }
 
@@ -368,6 +379,8 @@ struct SkinPlay {
     sizes: Vec<Option<(u32, u32)>>,
     /// ゲージのちらつき用（LR2 の `GetRand`）
     rng: LegacyMt,
+    /// システムフォントの文字列の実体（使い回す）
+    texts: Vec<Entity>,
 }
 
 #[derive(Resource)]
@@ -558,6 +571,15 @@ fn play_frame(
     }
 }
 
+/// システムフォントの文字列（描く位置と大きさは文字列の幅が決まってから [`place_text`] で決める）。
+/// Bevy は見えている文字列しか組まないので、実体は使い回して見えたままにする
+#[derive(Component)]
+struct SkinText {
+    run: Option<TextRun>,
+    z: f32,
+    res: (u32, u32),
+}
+
 /// LR2 スキンで描く（毎フレーム作り直す）。同じ画像・合成モード・フィルタが続く四角形を 1 つのメッシュにする
 fn draw_skin(
     mut commands: Commands,
@@ -565,6 +587,7 @@ fn draw_skin(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<SkinMaterial>>,
     old: Query<(Entity, &Mesh2d), With<SkinSprite>>,
+    mut texts: Query<(&mut Text2d, &mut TextFont, &mut TextColor, &mut SkinText)>,
 ) {
     for (e, m) in &old {
         meshes.remove(&m.0);
@@ -584,7 +607,7 @@ fn draw_skin(
     }
     let sizes = &sp.sizes;
     let size = |i: u32| sizes.get(i as usize).copied().flatten();
-    let quads = draw_play(&sp.skin, &sp.play, &view, &size);
+    let draws = draw_play(&sp.skin, &sp.play, &view, &size);
     let loaded = |i: u32| {
         sp.handles
             .get(i as usize)
@@ -592,30 +615,122 @@ fn draw_skin(
             .then(|| size(i))
             .flatten()
     };
-    for (i, b) in skin_render::batches(&quads, sp.skin.resolution, &loaded)
-        .into_iter()
-        .enumerate()
-    {
-        let Some(Some(h)) = sp.handles.get(b.image as usize) else {
+    // 奥から順に z を増やす。続く四角形はまとめ、文字列はその間に挟む
+    let mut z = 0.0;
+    let mut quads: Vec<Quad> = vec![];
+    let mut runs: Vec<(TextRun, f32)> = vec![];
+    let mut flush = |quads: &mut Vec<Quad>, z: &mut f32, commands: &mut Commands| {
+        for b in skin_render::batches(quads, sp.skin.resolution, &loaded) {
+            let Some(Some(h)) = sp.handles.get(b.image as usize) else {
+                continue;
+            };
+            let texture = h[b.filter as usize].clone();
+            let material = sp
+                .materials
+                .entry((b.image, b.blend as u8, b.filter))
+                .or_insert_with(|| {
+                    materials.add(SkinMaterial {
+                        texture,
+                        blend: b.blend,
+                    })
+                })
+                .clone();
+            commands.spawn((
+                Mesh2d(meshes.add(b.mesh)),
+                MeshMaterial2d(material),
+                Transform::from_xyz(0.0, 0.0, *z),
+                SkinSprite,
+            ));
+            *z += 0.001;
+        }
+        quads.clear();
+    };
+    for d in draws {
+        match d {
+            Draw::Quad(q) => quads.push(q),
+            Draw::Text(run) => {
+                flush(&mut quads, &mut z, &mut commands);
+                runs.push((run, z));
+                z += 0.001;
+            }
+        }
+    }
+    flush(&mut quads, &mut z, &mut commands);
+    // 文字列の実体を使い回す（足りなければ作り、余りは空にする）
+    let res = sp.skin.resolution;
+    for i in 0..runs.len().max(sp.texts.len()) {
+        let run = runs.get(i).cloned();
+        let style = |r: &TextRun| {
+            let [a, red, g, b] = r.argb.map(|c| c as f32 / 255.0);
+            (
+                TextFont {
+                    font: FontSource::SansSerif,
+                    font_size: FontSize::Px(r.font.size.max(1) as f32),
+                    weight: FontWeight((r.font.thickness.clamp(1, 9) * 100) as u16),
+                    ..default()
+                },
+                TextColor(Color::srgba(red, g, b, a)),
+            )
+        };
+        match sp.texts.get(i).and_then(|e| texts.get_mut(*e).ok()) {
+            Some((mut text, mut tf, mut color, mut st)) => {
+                let s = run.as_ref().map_or(String::new(), |(r, _)| r.text.clone());
+                if text.0 != s {
+                    text.0 = s;
+                }
+                if let Some((r, z)) = &run {
+                    let (f, c) = style(r);
+                    if tf.font_size != f.font_size || tf.weight != f.weight {
+                        *tf = f;
+                    }
+                    color.set_if_neq(c);
+                    st.z = *z;
+                }
+                st.run = run.map(|(r, _)| r);
+            }
+            None => {
+                let Some((r, z)) = run else { continue };
+                let (f, c) = style(&r);
+                let e = commands
+                    .spawn((
+                        Text2d::new(r.text.clone()),
+                        f,
+                        c,
+                        Anchor::TOP_LEFT,
+                        // 幅が分かるまでは大きさ 0
+                        Transform::from_scale(Vec3::ZERO),
+                        NoFrustumCulling,
+                        SkinText {
+                            run: Some(r),
+                            z,
+                            res,
+                        },
+                    ))
+                    .id();
+                sp.texts.push(e);
+            }
+        }
+    }
+}
+
+/// システムフォントの文字列を LR2 と同じく置く: 縦 = h / 大きさ、横 = 縦 × min(1, w / 幅)、揃え 1 は幅の半分・2 は幅だけ左へ
+fn place_text(mut q: Query<(&SkinText, &TextLayoutInfo, &mut Transform)>) {
+    for (t, info, mut tf) in &mut q {
+        let width = info.size.x;
+        let Some(run) = t.run.as_ref().filter(|_| width > 0.0) else {
+            tf.scale = Vec3::ZERO;
             continue;
         };
-        let texture = h[b.filter as usize].clone();
-        let material = sp
-            .materials
-            .entry((b.image, b.blend as u8, b.filter))
-            .or_insert_with(|| {
-                materials.add(SkinMaterial {
-                    texture,
-                    blend: b.blend,
-                })
-            })
-            .clone();
-        commands.spawn((
-            Mesh2d(meshes.add(b.mesh)),
-            MeshMaterial2d(material),
-            Transform::from_xyz(0.0, 0.0, i as f32 * 0.001),
-            SkinSprite,
-        ));
+        let [x, y, w, h] = run.dst;
+        let hl = h / run.font.size.max(1) as f32;
+        let wl = if width > w { w / width } else { 1.0 } * hl;
+        let x = match run.align {
+            1 => x - (width * wl * 0.5).trunc(),
+            2 => x - (width * wl).trunc(),
+            _ => x,
+        };
+        *tf = Transform::from_xyz(x - t.res.0 as f32 / 2.0, t.res.1 as f32 / 2.0 - y, t.z)
+            .with_scale(Vec3::new(wl, hl, 1.0));
     }
 }
 
@@ -625,7 +740,7 @@ struct ResultText;
 /// 場面が終わったら結果を出す（結果画面ができるまでの仮）
 fn show_result(
     mut commands: Commands,
-    game: Res<Game>,
+    mut game: ResMut<Game>,
     mut meshes: ResMut<Assets<Mesh>>,
     old: Query<(Entity, &Mesh2d), With<SkinSprite>>,
     shown: Query<(), With<ResultText>>,
@@ -636,6 +751,11 @@ fn show_result(
     for (e, m) in &old {
         meshes.remove(&m.0);
         commands.entity(e).despawn();
+    }
+    if let Some(sp) = game.skin.as_mut() {
+        for e in sp.texts.drain(..) {
+            commands.entity(e).despawn();
+        }
     }
     let play = game.session.play();
     let c = play.counts();

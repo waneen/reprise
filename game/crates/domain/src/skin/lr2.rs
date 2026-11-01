@@ -1,7 +1,7 @@
 //! LR2 のプレイ画面のスキン描画（DOM-SKD-*）。どの要素を・どこに・どの切り出しで描くかを決め、
-//! 描画 API には依存しない四角形の列（[`Quad`]）を返す。OpenLR2 の `LR2_skindraw.cpp`・`Main.cpp`・
+//! 描画 API には依存しない四角形とシステムフォントの文字列の列（[`Draw`]）を返す。OpenLR2 の `LR2_skindraw.cpp`・`Main.cpp`・
 //! `Scene04_Play.cpp`・`LR2_skinload.cpp` を仕様として参照した（コードは転載していない）。
-use super::{Blend, Element, ElementKind, Keyframe, Skin, SourceRect};
+use super::{Blend, Element, ElementKind, ImageFont, Keyframe, Skin, SourceRect, SystemFont};
 
 /// 描画時に問い合わせるゲームの状態（LR2 の番号で引く）
 pub trait SkinState {
@@ -17,6 +17,8 @@ pub trait SkinState {
     fn slider(&self, kind: i32) -> f64;
     /// 皿の角度（度）。`side` は 1 = 1P、2 = 2P
     fn turntable(&self, side: i32) -> f32;
+    /// 文字列（LR2 の文字列番号）。分からない番号・空は None
+    fn text(&self, id: i32) -> Option<&str>;
 }
 
 /// プレイ画面に固有の描画材料
@@ -66,6 +68,29 @@ pub struct Quad {
     pub angle: f32,
     /// 回転の中心（テンキー配置。0, 5 などは中央）
     pub center: u8,
+    pub blend: Blend,
+    pub filter: bool,
+}
+
+/// 描くもの（奥から順）
+#[derive(Debug, Clone, PartialEq)]
+pub enum Draw {
+    Quad(Quad),
+    /// システムフォントの文字列（大きさの合わせ方は [`TextRun`]）
+    Text(TextRun),
+}
+
+/// システムフォントで描く文字列。描く側は LR2 と同じく、文字列の幅 `width`（フォントの大きさで測る）から
+/// 縦 = h / 大きさ、横 = 縦 × (width > w なら w / width、それ以外 1) に拡大し、揃え 1 なら幅の半分、2 なら幅だけ左へずらす
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextRun {
+    pub font: SystemFont,
+    pub text: String,
+    /// x, y, w, h（x, y は揃える前の左上）
+    pub dst: [f32; 4],
+    /// 0 = 左、1 = 中央、2 = 右
+    pub align: i32,
+    pub argb: [u8; 4],
     pub blend: Blend,
     pub filter: bool,
 }
@@ -390,11 +415,11 @@ pub fn pixels_per_beat(hi_speed: f64) -> f64 {
     480.0 * hi_speed / 600.0
 }
 
-/// 描画順の付いた四角形
+/// 描画順の付いたもの
 struct Sorted {
     order: u32,
     sub: u8,
-    q: Quad,
+    d: Draw,
 }
 
 struct Ctx<'a> {
@@ -413,7 +438,7 @@ impl<'a> Ctx<'a> {
             self.out.push(Sorted {
                 order: e.order,
                 sub,
-                q,
+                d: Draw::Quad(q),
             });
         }
     }
@@ -465,13 +490,13 @@ impl<'a> Ctx<'a> {
     }
 }
 
-/// プレイ画面を描く四角形を、奥から順に返す（DOM-SKD-07..10）
+/// プレイ画面を描くものを、奥から順に返す（DOM-SKD-07..12）
 pub fn draw_play(
     skin: &Skin,
     st: &dyn SkinState,
     view: &PlayView,
     image_size: &dyn Fn(u32) -> Option<(u32, u32)>,
-) -> Vec<Quad> {
+) -> Vec<Draw> {
     let mut cx = Ctx {
         skin,
         st,
@@ -551,12 +576,120 @@ pub fn draw_play(
                 }
                 _ => {}
             },
+            ElementKind::Text {
+                value_ref,
+                font,
+                align,
+            } if ops_true(st, e) => {
+                if let Some(s) = st.text(*value_ref).filter(|s| !s.is_empty()) {
+                    text(&mut cx, e, s, *font, *align);
+                }
+            }
             ElementKind::NoteLane { .. } if playing => notes(&mut cx, e, view),
             _ => {}
         }
     }
     cx.out.sort_by_key(|s| (s.order, s.sub));
-    cx.out.into_iter().map(|s| s.q).collect()
+    cx.out.into_iter().map(|s| s.d).collect()
+}
+
+/// DOM-SKD-12: 文字列。DST の幅・高さが 0 なら描かない。同じ番号の画像フォント（大きさ > 0）があればそれで、
+/// 無ければ同じ番号のシステムフォントで描く。DST の角度は使わない（LR2 はそこにフォント番号を入れる）
+fn text(cx: &mut Ctx<'_>, e: &Element, s: &str, font: u32, align: i32) {
+    let Some(mut pose) = pose_at(e, cx.st.timer(e.timer.0)) else {
+        return;
+    };
+    pose.angle = 0.0;
+    let [x, y, w, h] = pose.dst;
+    if w == 0.0 || h == 0.0 {
+        return;
+    }
+    let skin = cx.skin;
+    if let Some(Some(f)) = skin.image_fonts.get(font as usize) {
+        if f.size > 0 {
+            for (image, src, dst) in layout_text(f, s, [x, y, w, h], align) {
+                let mut p = pose;
+                p.dst = dst;
+                if let Some(q) = quad(image, src, &p) {
+                    cx.out.push(Sorted {
+                        order: e.order,
+                        sub: 0,
+                        d: Draw::Quad(q),
+                    });
+                }
+            }
+            return;
+        }
+    }
+    if let Some(Some(sf)) = skin.fonts.get(font as usize) {
+        cx.out.push(Sorted {
+            order: e.order,
+            sub: 0,
+            d: Draw::Text(TextRun {
+                font: *sf,
+                text: s.to_string(),
+                dst: pose.dst,
+                align,
+                argb: pose.argb.map(|c| c.clamp(0.0, 255.0) as u8),
+                blend: pose.blend,
+                filter: pose.filter,
+            }),
+        });
+    }
+}
+
+/// DOM-SKD-13: 画像フォントの並べ方（LR2 `LRDrawText`）。幅 = Σ(文字の幅 + 間隔) − 間隔（無い文字は `?` の幅）、
+/// 縦の倍率 = h / 大きさ、横の倍率 = 縦の倍率 × (幅 > w なら w / 幅、それ以外 1)。揃え 1 は 幅 × 横の倍率 / 2、2 は 幅 × 横の倍率 だけ
+/// 左へ（整数に切り捨て）。各文字は左から 文字の幅 × 横の倍率 と 間隔 × 横の倍率 ずつ進め、無い文字は `?` で描き、空白・改行は描かない。
+/// 位置は 0.5 を足して切り捨てる。返すのは（画像, 切り出し, 位置）
+pub fn layout_text(
+    f: &ImageFont,
+    s: &str,
+    dst: [f32; 4],
+    align: i32,
+) -> Vec<(u32, [f32; 4], [f32; 4])> {
+    let [x, y, w, h] = dst;
+    let fallback = f.glyphs.get(&'?').filter(|g| g.rect[2] > 0);
+    let own = |c: char| f.glyphs.get(&c).filter(|g| g.rect[2] > 0);
+    let glyph = |c: char| own(c).or(fallback);
+    let margin = f.margin as f32;
+    let width: f32 = s
+        .chars()
+        .map(|c| margin + glyph(c).map_or(0.0, |g| g.rect[2] as f32))
+        .sum::<f32>()
+        - margin;
+    if width == 0.0 {
+        return vec![];
+    }
+    let hl = h / f.size as f32;
+    let wl = if width > w { w / width } else { 1.0 } * hl;
+    let x = match align {
+        1 => x - (width * wl * 0.5).trunc(),
+        2 => x - (width * wl).trunc(),
+        _ => x,
+    };
+    let round = |v: f32| (v + 0.5).trunc();
+    let mut out = vec![];
+    let mut sum = 0.0;
+    for c in s.chars() {
+        // 無い文字は `?` に置き換えて描く
+        let (c, g) = match own(c) {
+            Some(g) => (c, Some(g)),
+            None => ('?', fallback),
+        };
+        let xf = g.map_or(0.0, |g| g.rect[2] as f32) * wl;
+        if let (Some(g), false) = (g, c == ' ' || c == '\n') {
+            let (x1, x2) = (round(x + sum), round(x + sum + xf));
+            let (y1, y2) = (round(y), round(y + hl * g.rect[3] as f32));
+            out.push((
+                g.image,
+                g.rect.map(|v| v as f32),
+                [x1, y1, x2 - x1, y2 - y1],
+            ));
+        }
+        sum += margin * wl + xf;
+    }
+    out
 }
 
 /// DOM-SKD-11: 小節線。DST_LINE の位置から 拍数 × [`pixels_per_beat`] 上に、判定位置を過ぎていないものだけ描く。α は 255
