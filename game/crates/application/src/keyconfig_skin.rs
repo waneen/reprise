@@ -2,7 +2,8 @@
 //! OpenLR2 の `Scene06_Keyconfig.cpp`（`ProcI_Keyconfig`・`ProcS_Keyconfig`）・`LR2_gameloop.cpp`（`ReactInput` のタイマー 100..129 と
 //! `SetObjectValue_Button`）・`Main.cpp`（場面の開始・`#STARTINPUT`）・`LR2_skinobject.cpp`（条件 400..402）を仕様として参照した。
 //! キーの割り当ての規則そのものは `domain::keyconfig`。
-use domain::input::{Bindings, Source, SCRATCH_DOWN, SCRATCH_UP};
+use crate::key_timers::KeyTimers;
+use domain::input::{Bindings, Source};
 use domain::keyconfig::{Assigned, KeyConfig};
 use domain::skin::lr2::{ButtonClick, SkinState};
 use domain::skin::SceneTiming;
@@ -39,8 +40,8 @@ pub struct KeyConfigSkin {
     config: KeyConfig,
     /// 文字列 40..=55
     texts: [String; 16],
-    /// 皿の 2 方向の押下
-    scratch: [bool; 2],
+    /// 皿・鍵盤のタイマー
+    keys: KeyTimers,
     /// Esc か右クリックで閉じ始めた（タイマー 2）
     exiting: bool,
 }
@@ -59,7 +60,7 @@ impl KeyConfigSkin {
             starts: BTreeMap::new(),
             config: KeyConfig::default(),
             texts: Default::default(),
-            scratch: [false; 2],
+            keys: KeyTimers::default(),
             exiting: false,
         };
         s.starts.insert(0, 0);
@@ -97,7 +98,7 @@ impl KeyConfigSkin {
         // APP-KCF-03: タイマー 1 の後は押した・離した鍵盤のタイマー
         if self.starts.contains_key(&1) {
             for &(slot, down) in input.slots {
-                self.key_timer(slot, down);
+                self.keys.apply(&mut self.starts, now_ms, slot, down);
             }
         }
         // BUTTON のクリック（閉じ始めた後も受ける）
@@ -137,25 +138,6 @@ impl KeyConfigSkin {
             self.starts.insert(2, now_ms);
         }
         out
-    }
-
-    /// 1P の操作のタイマー（皿は 2 方向で 1 つ。0 = 皿、1..=7 = 鍵盤）
-    fn key_timer(&mut self, slot: usize, down: bool) {
-        let lane = match slot {
-            SCRATCH_UP | SCRATCH_DOWN => {
-                self.scratch[slot] = down;
-                if !down && self.scratch.iter().any(|&h| h) {
-                    // もう片方を押している間は離していない
-                    return;
-                }
-                0
-            }
-            2..=8 => slot as i32 - 1,
-            _ => return,
-        };
-        let (on, off) = if down { (100, 120) } else { (120, 100) };
-        self.starts.insert(on + lane, self.now);
-        self.starts.remove(&(off + lane));
     }
 }
 

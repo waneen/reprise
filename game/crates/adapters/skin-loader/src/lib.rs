@@ -12,7 +12,7 @@
 //! | ADP-SK-07 | `FsResolver`: 一致するファイルが無ければ None |
 //! | ADP-SK-08 | 読み込み終了時点で真の条件を昇順で写す |
 //! | ADP-SK-09 | 抜き色: 最後の `#TRANSCOLOR,r,g,b`（LR2 が受け付ける綴り違い `TRANSCLOLR`/`TRANSCLOLOR` も）、無ければローダの既定 |
-//! | ADP-SK-10 | 場面の時間: `STARTINPUT`（beatoraja は `INPUT`）・`LOADSTART`・`LOADEND`・`PLAYSTART`・`FADEOUT`・`CLOSE`（`SKIP` も）の第 1 引数。後の行が勝ち、無ければ 0 |
+//! | ADP-SK-10 | 場面の時間: `STARTINPUT`（beatoraja は `INPUT`）・`LOADSTART`・`LOADEND`・`PLAYSTART`・`FADEOUT`・`CLOSE`（`SKIP` も）の第 1 引数と、`STARTINPUT` の第 2・第 3 引数（リザルトのランク・記録更新。OpenLR2 `startinput_rank`・`startinput_update`）。後の行が勝ち、無ければ 0 |
 //! | ADP-SK-11 | フォント: `#FONT` はシステムフォント（それ以外の種類は None）。画像フォントの画像は `images` の後ろに足し、文字はその添字を指す。画像が無い文字は捨て、読めなかったフォントは None |
 //! | ADP-SK-12 | 曲バーの配置: `#BAR_CENTER,n` は 0..=29 のときだけ（OpenLR2 の範囲の確かめ）、`#BAR_AVAILABLE,a,b` はそのまま。後の行が勝ち、無ければ 0 |
 use application::ports::{FileSystem, PortError, SkinLoader};
@@ -230,7 +230,12 @@ pub fn map_skin(doc: sc::SkinDocument, default_color_key: Option<[u8; 3]>) -> d:
         match dir.command.as_str() {
             "BAR_CENTER" if (0..=29).contains(&v) => bars.center = v,
             "BAR_AVAILABLE" => bars.available = (v, arg(1)),
-            "STARTINPUT" | "INPUT" => timing.start_input = v,
+            "STARTINPUT" => {
+                timing.start_input = v;
+                timing.start_input_rank = arg(1);
+                timing.start_input_update = arg(2);
+            }
+            "INPUT" => timing.start_input = v,
             "LOADSTART" => timing.load_start = v,
             "LOADEND" => timing.load_end = v,
             "PLAYSTART" => timing.play_start = v,

@@ -74,6 +74,10 @@ pub struct FontGlyph {
 pub struct SceneTiming {
     /// これを過ぎると入力を受け付ける（タイマー 1）
     pub start_input: i32,
+    /// リザルト: ランク表示（タイマー 151）からこれを過ぎると次の入力で記録更新の表示（タイマー 152）へ進む（`#STARTINPUT` の第 2 引数）
+    pub start_input_rank: i32,
+    /// リザルト: 記録更新の表示（タイマー 152）からこれを過ぎると次の入力で閉じ始める（`#STARTINPUT` の第 3 引数）
+    pub start_input_update: i32,
     pub load_start: i32,
     /// 読み込み開始 + これ でタイマー 40（準備完了）
     pub load_end: i32,

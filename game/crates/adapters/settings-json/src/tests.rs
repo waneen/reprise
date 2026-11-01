@@ -29,6 +29,7 @@ fn sjs_01_missing(#[case] rel: &str) {
         skin: Some("LR2files/Theme/x/play.csv".into()),
         select_skin: Some("LR2files/Theme/x/select.csv".into()),
         keyconfig_skin: Some("LR2files/Theme/x/keyconfig.csv".into()),
+        result_skin: Some("LR2files/Theme/x/result.csv".into()),
         skin_root: Some("/lr2".into()),
         gauge: GaugeType::Hazard,
         ..Default::default()
@@ -119,6 +120,24 @@ fn sjs_06_keyconfig_skin(#[case] text: &str, #[case] want: Option<PathBuf>) {
     assert_eq!(
         to_json(&s)["keyconfig_skin"],
         v.get("keyconfig_skin").cloned().unwrap_or(Value::Null)
+    );
+}
+
+/// SJS-08: リザルトスキン
+#[rstest]
+#[case::path(
+    r#"{"result_skin": "LR2files/Theme/x/result.csv"}"#,
+    Some(PathBuf::from("LR2files/Theme/x/result.csv"))
+)]
+#[case::null(r#"{"result_skin": null}"#, None)]
+#[case::missing("{}", None)]
+fn sjs_08_result_skin(#[case] text: &str, #[case] want: Option<PathBuf>) {
+    let v: Value = serde_json::from_str(text).unwrap();
+    let s = from_json(&v).unwrap();
+    assert_eq!(s.result_skin, want);
+    assert_eq!(
+        to_json(&s)["result_skin"],
+        v.get("result_skin").cloned().unwrap_or(Value::Null)
     );
 }
 

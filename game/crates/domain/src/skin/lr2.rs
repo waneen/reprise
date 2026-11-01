@@ -1,6 +1,6 @@
-//! LR2 のプレイ画面・選曲画面・キー設定画面のスキン描画（DOM-SKD-*）。どの要素を・どこに・どの切り出しで描くかを決め、
+//! LR2 のプレイ画面・選曲画面・キー設定画面・リザルト画面のスキン描画（DOM-SKD-*）。どの要素を・どこに・どの切り出しで描くかを決め、
 //! 描画 API には依存しない四角形・単色の四角形・システムフォントの文字列の列（[`Draw`]）を返す。OpenLR2 の `LR2_skindraw.cpp`・`Main.cpp`・
-//! `Scene04_Play.cpp`・`Scene02_Songselect.cpp`・`LR2_skinobject.cpp`・`LR2_skinload.cpp` を仕様として参照した（コードは転載していない）。
+//! `Scene04_Play.cpp`・`Scene02_Songselect.cpp`・`Scene05_Result.cpp`・`LR2_skinobject.cpp`・`LR2_skinload.cpp` を仕様として参照した（コードは転載していない）。
 use super::{Blend, Element, ElementKind, ImageFont, Keyframe, Skin, SourceRect, SystemFont};
 
 /// 描画時に問い合わせるゲームの状態（LR2 の番号で引く）
@@ -1154,6 +1154,110 @@ pub fn draw_keyconfig(
     }
     cx.out.sort_by_key(|s| (s.order, s.sub));
     cx.out.into_iter().map(|s| s.d).collect()
+}
+
+/// リザルト画面の描画材料
+#[derive(Debug, Clone, Copy)]
+pub struct ResultView<'a> {
+    /// ゲージグラフの区間ごとの HP（`domain::play::GaugeGraph`）
+    pub graph: &'a [i32],
+    /// GROOVE・EASY ゲージ（80 未満を GAUGECHART_1P の 0 番で描く）
+    pub groove: bool,
+    /// グラフを描き終える時刻（タイマー 0 の経過）を入力で早めたもの（無ければ GAUGECHART_1P\[0\] の SRC 引数 14）
+    pub chart_end: Option<i64>,
+}
+
+/// GAUGECHART_1P\[0\] の SRC 引数 13・14（グラフを描き始める・描き終える時刻。無ければ 0）。リザルトのタイマー 150・151 に使う
+pub fn gauge_chart_times(skin: &Skin) -> (i64, i64) {
+    skin.elements
+        .iter()
+        .rev()
+        .find(|e| {
+            matches!(&e.kind, ElementKind::Other { command, index: 0 } if command == "GAUGECHART_1P")
+        })
+        .and_then(|e| e.source.as_ref())
+        .map_or((0, 0), |s| (s.params[2] as i64, s.params[3] as i64))
+}
+
+/// リザルト画面を描くものを、奥から順に返す（DOM-SKD-21）。場面によらない要素と GAUGECHART_1P を描く
+pub fn draw_result(
+    skin: &Skin,
+    st: &dyn SkinState,
+    view: &ResultView<'_>,
+    image_size: &dyn Fn(u32) -> Option<(u32, u32)>,
+) -> Vec<Draw> {
+    let mut cx = Ctx {
+        skin,
+        st,
+        image_size,
+        out: vec![],
+    };
+    for e in &skin.elements {
+        common(&mut cx, e);
+    }
+    gauge_chart(&mut cx, view);
+    cx.out.sort_by_key(|s| (s.order, s.sub));
+    cx.out.into_iter().map(|s| s.d).collect()
+}
+
+/// DOM-SKD-22: リザルトのゲージグラフ（OpenLR2 `Proc_Result`）。GAUGECHART_1P\[0\] の SRC 引数 11 = 幅（0 以下なら描かない）、
+/// 12 = 高さ、13・14 = 伸び始め・伸び終わりの時刻。描く長さ = タイマー 0 の経過で 0 から幅へ直線、
+/// x = 0, w, 2w, …（w は 0 番の最初の DST の幅）ごとに区間 x × 1000 / 幅 の HP まで 1 ずつ値を動かし、
+/// 値が変わって高さの位置が変わるたびに、最後にその区間の値で、0 番（GROOVE・EASY で 80 未満）か 1 番を
+/// DST から (x, その番の高さ × 値 / −100) ずらして描く（条件は見ない）
+fn gauge_chart(cx: &mut Ctx<'_>, view: &ResultView<'_>) {
+    let Some(e0) = cx.find("GAUGECHART_1P", 0) else {
+        return;
+    };
+    let Some(s0) = e0.source.as_ref() else {
+        return;
+    };
+    let [width, h0, start, end, _] = s0.params;
+    if width <= 0 || view.graph.is_empty() {
+        return;
+    }
+    let end = view.chart_end.unwrap_or(end as i64);
+    let t0 = cx.st.timer(0).unwrap_or(-1);
+    let length = by_time(0.0, width as f64, start as f64, end as f64, t0 as f64) as i64;
+    let step = e0.keyframes.first().map_or(0, |k| k.dst[2] as i64);
+    if step <= 0 {
+        return;
+    }
+    let e1 = cx.find("GAUGECHART_1P", 1);
+    let h1 = e1
+        .and_then(|e| e.source.as_ref())
+        .map_or(0, |s| s.params[1]);
+    let pick = |v: i32| {
+        if view.groove && v < 80 {
+            (Some(e0), h0)
+        } else {
+            (e1, h1)
+        }
+    };
+    let graph = view.graph;
+    let mut val = graph[0];
+    let mut x = 0;
+    while x < length {
+        let axis = ((x * 1000 / width as i64) as usize).min(graph.len() - 1);
+        let to = graph[axis];
+        let mut last = 0;
+        while val != to {
+            let (e, h) = pick(val);
+            let y = h * val / -100;
+            if last != y {
+                if let Some(e) = e {
+                    cx.object(e, x as f32, y as f32);
+                }
+                last = y;
+            }
+            val += (to - val).signum();
+        }
+        let (e, h) = pick(to);
+        if let Some(e) = e {
+            cx.object(e, x as f32, (h * to / -100) as f32);
+        }
+        x += step;
+    }
 }
 
 /// DOM-SKD-18: マウスが DST の上にあるか（LR2 `MouseOnDSTD`）。画面の外・DST の外は 0、DST の右半分（中央を含む）は 1、左半分は 2

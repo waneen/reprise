@@ -47,7 +47,7 @@ pub struct SavedScore {
     pub after: ScoreRecord,
 }
 
-/// プレイの保存（APP-UC-06）。`mode` が None なら保存せず None。
+/// プレイの保存（APP-UC-06）。`mode` が None か、PG・GR・GD が 1 つも無ければ（LR2 `Main.cpp`）保存せず None。
 /// 既存の記録（無ければ空の記録）に LR2 の更新（DOM-SCR-06, 07）を当てて保存する
 pub fn save_play(
     repo: &mut dyn ScoreRepository,
@@ -57,6 +57,9 @@ pub fn save_play(
     let Some(mode) = mode else {
         return Ok(None);
     };
+    if play.pgreat + play.great + play.good == 0 {
+        return Ok(None);
+    }
     let before = repo.find(&play.chart, play.ruleset)?;
     let mut after = before
         .clone()
@@ -310,13 +313,14 @@ mod tests {
     /// 保存前の EX と、保存後の (ランプ, EX, プレイ回数, SHA-256 がある)
     type Saved = (Option<u32>, (ClearLamp, u32, u32, bool));
 
-    /// APP-UC-06: プレイの保存。保存しないなら何もしない。既存（無ければ空の記録）に LR2 の更新を当てて保存し、
+    /// APP-UC-06: プレイの保存。保存しないか PG・GR・GD が無ければ何もしない。既存（無ければ空の記録）に LR2 の更新を当てて保存し、
     /// 前後の記録を返す。SHA-256 が分かっていなければプレイのものを使う
     #[rstest]
     #[case::first(None, Some(SaveMode::Full), Some((None, (ClearLamp::Normal, 100, 1, true))))]
     #[case::update(Some(record(1, RulesetId::Lr2, 500, 3)), Some(SaveMode::Full), Some((Some(500), (ClearLamp::Normal, 500, 4, true))))]
     #[case::lamp_only(None, Some(SaveMode::LampOnly), Some((None, (ClearLamp::Easy, 0, 1, true))))]
     #[case::not_saved(Some(record(1, RulesetId::Lr2, 500, 3)), None, None)]
+    #[case::no_good_or_better(Some(record(1, RulesetId::Lr2, 500, 3)), Some(SaveMode::Full), None)]
     fn app_uc_06_save_play(
         #[case] best: Option<ScoreRecord>,
         #[case] mode: Option<SaveMode>,
@@ -326,7 +330,12 @@ mod tests {
         if let Some(b) = &best {
             repo.save(b.clone()).unwrap();
         }
-        let got = save_play(&mut repo, &played(ClearLamp::Normal, 100), mode).unwrap();
+        let mut play = played(ClearLamp::Normal, 100);
+        if want.is_none() && mode.is_some() {
+            // BD・POOR だけのプレイ
+            (play.pgreat, play.great, play.good, play.bad) = (0, 0, 0, 2);
+        }
+        let got = save_play(&mut repo, &play, mode).unwrap();
         let summary = got.as_ref().map(|s| {
             (
                 s.before.as_ref().map(|b| b.ex_score),

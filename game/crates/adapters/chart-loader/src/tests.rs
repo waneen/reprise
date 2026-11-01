@@ -192,11 +192,16 @@ fn adp_ch_07_random_uses_legacy_mt(#[case] seed: u32) {
             }],
         }],
     };
-    let c = DecoderLoader(Fixed(d))
-        .load(Path::new("a.bms"), b"", &mut LegacyMt::new(seed))
-        .unwrap();
+    let load = || {
+        DecoderLoader(Fixed(d.clone()))
+            .load(Path::new("a.bms"), b"", &mut LegacyMt::new(seed))
+            .unwrap()
+    };
+    let c = load();
     let expected = LegacyMt::new(seed).get_rand(3) + 1;
     assert_eq!(c.bgm, vec![(Beat(4.0), SoundId(expected))]);
+    // 同じ種で読み直せば同じ譜面（リザルトからもう一度遊ぶとき）
+    assert_eq!(load(), c);
 }
 
 /// ADP-CH-08: 小節長は Measure として出す

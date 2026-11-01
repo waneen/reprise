@@ -962,3 +962,98 @@ fn dom_skd_20_keyconfig(
         assert_eq!(got.last().unwrap().src[0], 20.0);
     }
 }
+
+/// リザルトの描画（四角形だけ）
+fn result_quads(sk: &Skin, s: &St, view: &ResultView<'_>) -> Vec<Quad> {
+    draw_result(sk, s, view, &size)
+        .into_iter()
+        .filter_map(|d| match d {
+            Draw::Quad(q) => Some(q),
+            _ => None,
+        })
+        .collect()
+}
+
+/// GAUGECHART_1P の 0 番（SRC の x = 0）と 1 番（SRC の x = 8）。DST は (10, 200, 2, 2)、幅 4・高さ 100
+fn chart_skin(width: i32, start: i32, end: i32) -> Skin {
+    let mut es = vec![];
+    for i in 0..2 {
+        let mut s = src([i * 8, 0, 8, 8], (1, 1), 0, 0);
+        s.params = [width, 100, start, end, 0];
+        es.push(el(
+            other("GAUGECHART_1P", i),
+            s,
+            0,
+            vec![kf(0, [10.0, 200.0, 2.0, 2.0], 255, 0)],
+        ));
+    }
+    skin(es)
+}
+
+/// DOM-SKD-21: リザルト画面は場面によらない要素（IMAGE など）と GAUGECHART_1P を描き、ノーツなどの場面の部品は描かない
+#[rstest]
+#[case::image_and_chart(true, vec![[100.0, 0.0, 8.0, 8.0], [10.0, 150.0, 2.0, 2.0]])]
+#[case::image_only(false, vec![[100.0, 0.0, 8.0, 8.0]])]
+fn dom_skd_21_result(#[case] chart: bool, #[case] want: Vec<[f32; 4]>) {
+    let mut sk = if chart {
+        chart_skin(2, 0, 0)
+    } else {
+        skin(vec![])
+    };
+    sk.elements.insert(0, img(0, 100.0));
+    sk.elements.push(el(
+        ElementKind::NoteLane { lane: 1 },
+        src([0, 0, 8, 8], (1, 1), 0, 0),
+        0,
+        vec![kf(0, [300.0, 0.0, 8.0, 8.0], 255, 0)],
+    ));
+    let graph = vec![50; 1000];
+    let view = ResultView {
+        graph: &graph,
+        groove: false,
+        chart_end: None,
+    };
+    let got = result_quads(&sk, &st(&[(0, 1000), (41, 1000)]), &view);
+    assert_eq!(dsts(&got), want);
+}
+
+/// DOM-SKD-22: ゲージグラフ。(SRC の x, DST の x, DST の y) の並び
+#[rstest]
+// 区間 0 は 78、x = 2 は区間 500 = 81。GROOVE は 80 未満を 0 番、以降を 1 番で 1 ずつ描いて最後に区間の値
+#[case::groove_steps(chart_skin(4, 0, 0), true, None, 1000, vec![(0.0, 10.0, 122.0), (0.0, 12.0, 122.0), (0.0, 12.0, 121.0), (8.0, 12.0, 120.0), (8.0, 12.0, 119.0)])]
+// HARD などは 1 番だけ
+#[case::survival_uses_1(chart_skin(4, 0, 0), false, None, 1000, vec![(8.0, 10.0, 122.0), (8.0, 12.0, 122.0), (8.0, 12.0, 121.0), (8.0, 12.0, 120.0), (8.0, 12.0, 119.0)])]
+// 0..1000ms で伸びる途中（500ms で長さ 2 = x = 0 だけ）
+#[case::growing(chart_skin(4, 0, 1000), true, None, 500, vec![(0.0, 10.0, 122.0)])]
+// 入力で描き終える時刻を早めるとすべて描く
+#[case::ended_by_input(chart_skin(4, 0, 1000), true, Some(400), 500, vec![(0.0, 10.0, 122.0), (0.0, 12.0, 122.0), (0.0, 12.0, 121.0), (8.0, 12.0, 120.0), (8.0, 12.0, 119.0)])]
+// 幅が 0 なら描かない
+#[case::no_width(chart_skin(0, 0, 0), true, None, 1000, vec![])]
+fn dom_skd_22_gauge_chart(
+    #[case] sk: Skin,
+    #[case] groove: bool,
+    #[case] chart_end: Option<i64>,
+    #[case] t0: i64,
+    #[case] want: Vec<(f32, f32, f32)>,
+) {
+    let mut graph = vec![78; 1000];
+    for v in &mut graph[500..] {
+        *v = 81;
+    }
+    let view = ResultView {
+        graph: &graph,
+        groove,
+        chart_end,
+    };
+    let got: Vec<(f32, f32, f32)> = result_quads(&sk, &st(&[(0, t0)]), &view)
+        .iter()
+        .map(|q| (q.src[0], q.dst[0], q.dst[1]))
+        .collect();
+    assert_eq!(got, want);
+    // タイマー 150・151 に使う時刻は 0 番の SRC 引数 13・14
+    assert_eq!(
+        gauge_chart_times(&sk),
+        (0, sk.elements[0].source.as_ref().unwrap().params[3] as i64)
+    );
+    assert_eq!(gauge_chart_times(&skin(vec![])), (0, 0));
+}

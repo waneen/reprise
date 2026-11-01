@@ -1,6 +1,6 @@
 //! 仕様ルール（lib.rs の表）とテスト関数は 1 対 1。関数名の接頭辞がルール ID。
 use super::*;
-use domain::input::{key_slot, Side, START};
+use domain::input::{key_slot, Side, SCRATCH_DOWN, SCRATCH_UP, START};
 use rstest::rstest;
 
 fn timing(start_input: i32, fade_out: i32) -> SceneTiming {
