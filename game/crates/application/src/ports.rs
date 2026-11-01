@@ -55,6 +55,13 @@ pub trait FileSystem: Send + Sync {
     fn is_file(&self, path: &Path) -> bool;
 }
 
+/// 設定の保存先
+pub trait SettingsStore {
+    /// 保存した設定（まだ無ければ None）
+    fn load(&self) -> Result<Option<crate::settings::Settings>, PortError>;
+    fn save(&self, settings: &crate::settings::Settings) -> Result<(), PortError>;
+}
+
 pub trait Clock {
     fn now_us(&self) -> i64;
 }

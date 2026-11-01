@@ -38,15 +38,16 @@ game/reprise (Bevy, Composition Root)
 ## game/
 | crate | 役割 |
 |---|---|
-| domain | 確定譜面・拍⇄時刻（TimingMap）・判定/ゲージ(Ruleset)・プレイ進行（オートプレイを含む）・ノーツの流れる位置（`play::scroll`: HS-FIX）・LR2互換乱数・スコア・選曲（`select`: フォルダと譜面の一覧の並べ方・カーソル）・スキンモデル・LR2 スキンの描画計算（`skin::lr2`: 状態を問い合わせて描く四角形の列を返す） |
-| application | ユースケース（譜面読み込み・記録取り込み・曲一覧の走査（`scan_library`）・プレイ: 入力→フレームのレーン状態、音の出力、描画位置、プレイオプションとプレイ中の操作（`play_options`）、LR2 スキン用のタイマー・条件・数値（`PlaySkin`））、ポート（ChartLoader / SkinLoader / ScoreImporter / ScoreRepository / FileSystem / Clock / AudioOutput） |
+| domain | 確定譜面・拍⇄時刻（TimingMap）・判定/ゲージ(Ruleset)・プレイ進行（オートプレイを含む）・ノーツの流れる位置（`play::scroll`: HS-FIX）・LR2互換乱数・スコア・選曲（`select`: フォルダと譜面の一覧の並べ方・カーソル）・入力の割り当て（`input`: キー設定・軸の読み方・アナログ皿）・スキンモデル・LR2 スキンの描画計算（`skin::lr2`: 状態を問い合わせて描く四角形の列を返す） |
+| application | ユースケース（譜面読み込み・記録取り込み・曲一覧の走査（`scan_library`）・設定（`settings`）・プレイ: 入力→フレームのレーン状態、音の出力、描画位置、プレイオプションとプレイ中の操作（`play_options`）、LR2 スキン用のタイマー・条件・数値（`PlaySkin`））、ポート（ChartLoader / SkinLoader / ScoreImporter / ScoreRepository / FileSystem / SettingsStore / Clock / AudioOutput） |
 | adapters/chart-loader | reprise-chart-core → domain（小節→拍、MD5/SHA-256）、LegacyMt を RandomSource に適合、音・画像ファイルの解決（LR2 の拡張子違いの探し方） |
 | adapters/skin-loader | reprise-skin-core → domain（`#TRANSCOLOR` の抜き色、フォント。画像フォントの画像はスキンの画像の後ろに足す）、FileSystem の上の `FsResolver`（大小無視・`*` を LegacyMt で乱択） |
 | adapters/score-import-lr2 | LR2 のスコア DB（sqlite）→ ScoreRecord |
 | adapters/score-import-beatoraja | beatoraja / LR2oraja の score.db（sqlite）→ ScoreRecord（MD5 は songdata.db で引く） |
 | adapters/score-db | reprise 自身の記録の保存先（sqlite。ScoreRepository の実装。ネイティブ版だけ） |
+| adapters/settings-json | 設定の保存先（JSON ファイル。SettingsStore の実装。ネイティブ版だけ） |
 | adapters/file-system | FileSystem の実装（ディスクの `StdFs`、ブラウザ版でページから渡されたファイルを置く `MemFs`） |
-| reprise | Bevy（入力=Controller, 描画=Presenter/View）と組み立て。プレイ画面を LR2 スキン（無ければ四角形）で描く（1 ループ = 1 フレームで入力を読み、垂直同期なしで回す。スキン画像は抜き色を、BGA の画像は黒を透明にしてから Bevy に渡し、同じ画像・合成モード・フィルタが続く四角形を毎フレーム 1 つのメッシュにまとめ、合成モードはマテリアルのブレンド設定で描く。システムフォントの文字列は Bevy の Text2d（OS のフォントを探す）で描き、幅が決まってから LR2 と同じ倍率で置く）。場面（選曲 → プレイ → 選曲）は Bevy の States で切り替え、選曲画面（`select_scene`）は文字の一覧で描く。ネイティブとブラウザ（wasm）で違うところ（起動引数・ファイル・記録の保存先・乱数の種）は `platform` にまとめる |
+| reprise | Bevy（入力=Controller, 描画=Presenter/View）と組み立て。プレイ画面を LR2 スキン（無ければ四角形）で描く（1 ループ = 1 フレームで入力を読み、垂直同期なしで回す。スキン画像は抜き色を、BGA の画像は黒を透明にしてから Bevy に渡し、同じ画像・合成モード・フィルタが続く四角形を毎フレーム 1 つのメッシュにまとめ、合成モードはマテリアルのブレンド設定で描く。システムフォントの文字列は Bevy の Text2d（OS のフォントを探す）で描き、幅が決まってから LR2 と同じ倍率で置く）。場面（選曲 → プレイ → 選曲）は Bevy の States で切り替え、選曲画面（`select_scene`）は文字の一覧で描く。キーボードとゲームパッドの入力は毎フレーム場面の処理より先に割り当てで操作に直す（`input`）。ネイティブとブラウザ（wasm）で違うところ（起動引数・ファイル・記録の保存先・乱数の種）は `platform` にまとめる |
 
 ## 記法の追加手順
 1. `chart-formats/crates/`（または `skin-formats/crates/`）に crate を作り `ChartDecoder`（`SkinDecoder`）を実装
@@ -71,12 +72,13 @@ LR2 の挙動は OpenLR2（作者の説明では LR2 のソースを書き起こ
 - プレイオプション（`play::scroll`・`play_options`）: ハイスピードの既定 100・範囲 10..900・刻み 10、ノーツの位置は 1 拍 = 480 で表示は 位置の差 × ハイスピード × 倍率 / 600 ピクセル、HS-FIX の倍率 = 150 / BPM（ノーツの位置の BPM の最大・最小・平均・最多）、CONSTANT は止まっていない経過時間 1ms = 1.2、START/SELECT を押しながら鍵盤 1/3/5 で −・2/4 で +・6/7 でレーンカバー（無ければハイスピード）、START/SELECT の片方の 250ms 以内の 2 度押しでレーンカバーの表示を切り替え、レーンカバーは刻み 10・ホイールで 1 ずつ、判定タイミングは −199..199ms で見た目（とオートの判定）だけをずらす、オートプレイは判定時刻以下のノーツをすべて PG（地雷は発動させない）
 - 記録の保存（`ScoreRecord::update_lr2`・`save_play`）: OpenLR2 の `SaveResult` に合わせ、ランプは良い方、EX スコアが上回ったときだけ判定内訳を替える、最大コンボは大きい方、最小 BP は小さい方（途中終了は片付いていないノーツも BP に数える）、プレイ回数・クリア回数（FAILED 以外）を数える。オートプレイは保存しない。HS-FIX CONSTANT はランプを EASY までにしてランプと回数だけ保存
 - 選曲（`select`・`scan_library`）: 最初の一覧は登録したフォルダ、フォルダを開くと子フォルダの中の譜面（LR2 の `song.parent` = 譜面のフォルダの親）を、無ければ子フォルダを並べる（`curQuery` を順に試す）。譜面はディレクトリ順（`CMP_SongDataByDirectory`: フォルダ → 鍵盤数 → レベル、`#DIFFICULTY` 5 は後ろ）、フォルダはパス順（`CMP_SongDataByPath`）、どちらも大文字にして比べる。同じ MD5 は 1 つ。一覧は端で回り、スクロールは押して 300ms・押し続けて 70ms ごと（`speedfirst`・`speednext` の既定）。皿・↑↓で選び、鍵盤 1/3/5/7・Enter・→で決定、鍵盤 6 でオートプレイ、鍵盤 2・←で戻る。LR2 の `qsort` は安定でないので、同順位はパス順にした。戻ったときのカーソルは開く前の位置（OpenLR2 は戻る前に選んでいた項目のパスで一覧を探すが、その結果どこに置かれるかを確かめられなかったため）
+- 入力（`input`）: 軸をボタンとして読む閾値 ±0.9 と、アナログ皿（動いた向きに回したとし、止まって閾値を過ぎたら離す。端で回り込む）は beatoraja の `BMControllerInputProcessor`（版 1）に倣う。beatoraja は閾値を読み取り回数で数えるが、ここでは時間（既定 100ms）で持つ。アナログ皿は LR2 には無い機能で、LR2 方式（軸をボタンとして読む）と設定で切り替える。LR2 のゲームパッドの読み方（DxLib の `GetJoypadInputState` で 3 台を区別し、方向とボタンを 32 ビットで読む）の方向の閾値は確かめていない
 - 判定・ゲージ（`Lr2Ruleset`）: `#RANK` 別の判定幅、TOTAL の整数化と既定式、HARD のダメージ係数（OpenLR2 自身も要確認としている式）、HP 30% 以下の被ダメージ × 0.6、GROOVE/EASY の 2% 下限
 - プレイ進行（`Lr2Play`）: キー音（最後に片付いたノーツの音、不可視ノーツで差し替え）、BGM・不可視ノーツをレーンより先に処理、フレーム単位の処理（フレーム時刻の整数 ms で判定、レーン番号順、1 レーン 1 フレームにつき先頭ノーツ 1 つ）、BD の押下が次のノーツも巻き込む、LN の始点は GD を過ぎると見逃し、LN を終端の GD 幅より前に離すと BAD、地雷は GR 幅未満の押下か押しながらの通過で発動し POOR に数える、ゲージ 2% 未満で途中終了。フレームの間隔は PC ごとに違うので再現対象外（BPM 変化直後の時刻補正も未対応）
 
 beatoraja の判定・ゲージ（`BeatorajaRuleset`）は beatoraja の 7 鍵ルール（`JudgeProperty`・`GaugeProperty` の SEVENKEYS）を仕様として参照した。
 
-未対応（今後）: 選曲のうち: LR2 の選曲スキン・曲一覧のキャッシュ（song.db。今は起動のたびに読み直す）・並べ替え（レベル・題名・ランプ・スコア）・鍵盤数と難易度の絞り込み・`folderinfo.txt`・カスタムフォルダ（`.lr2folder`）・コース・検索・プレビュー音・決定画面。beatoraja の Lua スキン、`#SCROLL`・`#LNTYPE 2`・DSC/`#FP`、BGA の動画、bmson の `c`（続きから鳴らす）、判定・ゲージのうち段位（コース）ゲージ・LR2 の NONSTOP 判定幅・ロングノーツ終端の判定幅・beatoraja の 5 鍵/PMS/24 鍵ルールと `#DEFEXRANK`、beatoraja のプレイ進行（判定するノーツの選び方・LN の種類・ランプ）、キー設定・ゲームパッド・2P/DP/9 鍵・LN 終端の音。プレイオプションのうち: EFFECT の HIDDEN/SUDDEN（固定の範囲。OpenLR2 では範囲の計算に描画順の値を使っており、意図した値が確かめられないため）・オートスクラッチ（アシスト）・LIFT（OpenLR2 の拡張で LR2 には無い）・CONSTANT で BPM が変わる譜面のランプを EASY までにする扱い・スキン無しの表示での HS。記録のうち: ゴースト・オプション履歴・RANK/RATE の列・IR・プレイヤーの統計（総プレイ回数など）。LR2 スキン描画のうち: 合成は線形の色空間で混ぜる（LR2 は sRGB の値のまま混ぜるので加算などの明るさが少し違う）・システムフォントは OS のサンセリフ体で描き、LR2 の設定のフォント名・`#FONT` の種類（縁取り）・合成モードは反映しない・BGA の表示設定（大きさ・POOR 層の時間など）・BUTTON・2P 側・オート用ノーツ（`#SRC_AUTO_NOTE` など）・スキンの位置調整（adjust）・リザルト画面（場面が閉じたら結果を文字で出すだけ）、`#TRANSCOLOR` は位置にかかわらず全画像に適用、beatoraja スキンでの描画
+未対応（今後）: 選曲のうち: LR2 の選曲スキン・曲一覧のキャッシュ（song.db。今は起動のたびに読み直す）・並べ替え（レベル・題名・ランプ・スコア）・鍵盤数と難易度の絞り込み・`folderinfo.txt`・カスタムフォルダ（`.lr2folder`）・コース・検索・プレビュー音・決定画面。beatoraja の Lua スキン、`#SCROLL`・`#LNTYPE 2`・DSC/`#FP`、BGA の動画、bmson の `c`（続きから鳴らす）、判定・ゲージのうち段位（コース）ゲージ・LR2 の NONSTOP 判定幅・ロングノーツ終端の判定幅・beatoraja の 5 鍵/PMS/24 鍵ルールと `#DEFEXRANK`、beatoraja のプレイ進行（判定するノーツの選び方・LN の種類・ランプ）、キー設定のうち LR2 のキー設定画面（選曲スキンのボタン 13 から入り、キー設定スキンで描く。今は `config.json` を書き換える）・2P 側・ゲームパッドの区別（どのパッドでも同じ扱い）、2P/DP/9 鍵・LN 終端の音。プレイオプションのうち: EFFECT の HIDDEN/SUDDEN（固定の範囲。OpenLR2 では範囲の計算に描画順の値を使っており、意図した値が確かめられないため）・オートスクラッチ（アシスト）・LIFT（OpenLR2 の拡張で LR2 には無い）・CONSTANT で BPM が変わる譜面のランプを EASY までにする扱い・スキン無しの表示での HS。記録のうち: ゴースト・オプション履歴・RANK/RATE の列・IR・プレイヤーの統計（総プレイ回数など）。LR2 スキン描画のうち: 合成は線形の色空間で混ぜる（LR2 は sRGB の値のまま混ぜるので加算などの明るさが少し違う）・システムフォントは OS のサンセリフ体で描き、LR2 の設定のフォント名・`#FONT` の種類（縁取り）・合成モードは反映しない・BGA の表示設定（大きさ・POOR 層の時間など）・BUTTON・2P 側・オート用ノーツ（`#SRC_AUTO_NOTE` など）・スキンの位置調整（adjust）・リザルト画面（場面が閉じたら結果を文字で出すだけ）、`#TRANSCOLOR` は位置にかかわらず全画像に適用、beatoraja スキンでの描画
 
 ## ビルド
 各ディレクトリで `cargo test`（game は兄弟ディレクトリを path 参照するので3つ揃えて配置）。
