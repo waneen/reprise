@@ -272,10 +272,11 @@ impl Lr2Play {
     /// 1 プレイ分の記録
     pub fn record(&self, chart: ChartHash) -> ScoreRecord {
         let c = self.counts;
+        let lamp = self.clear_lamp();
         ScoreRecord {
             chart,
             ruleset: RulesetId::Lr2,
-            lamp: self.clear_lamp(),
+            lamp,
             ex_score: c.ex_score(),
             pgreat: c.pgreat,
             great: c.great,
@@ -283,8 +284,9 @@ impl Lr2Play {
             bad: c.bad,
             poor: c.poor,
             max_combo: self.max_combo,
-            min_bp: Some(c.bad + c.poor),
+            min_bp: Some(c.bad + c.poor + (self.total - self.processed)),
             play_count: 1,
+            clear_count: (lamp > ClearLamp::Failed) as u32,
             origin: ScoreOrigin::Native,
         }
     }
@@ -833,12 +835,20 @@ mod tests {
         assert_eq!(ten(g, bad, miss).clear_lamp(), want);
     }
 
-    /// DOM-LRP-10: 記録は EX スコア = PG×2 + GR、最小 BP = BD + POOR、プレイ回数 1、ルール LR2
+    /// DOM-LRP-10: 記録は EX スコア = PG×2 + GR、最小 BP = BD + POOR + 片付いていないノーツ数、プレイ回数 1、
+    /// クリア回数は FAILED 以外で 1、ルール LR2
     #[rstest]
-    #[case::all_pg(0, 20, 0)]
-    #[case::one_bad(5, 18, 1)]
-    fn dom_lrp_10_record(#[case] bad: usize, #[case] ex: u32, #[case] bp: u32) {
-        let rec = ten(GaugeType::Groove, bad, false).record(ChartHash {
+    #[case::all_pg(GaugeType::Groove, 0, 20, 0, 1)]
+    #[case::one_bad(GaugeType::Groove, 5, 18, 1, 1)]
+    #[case::died_rest_counted(GaugeType::Hazard, 5, 8, 6, 0)]
+    fn dom_lrp_10_record(
+        #[case] g: GaugeType,
+        #[case] bad: usize,
+        #[case] ex: u32,
+        #[case] bp: u32,
+        #[case] clears: u32,
+    ) {
+        let rec = ten(g, bad, false).record(ChartHash {
             md5: [7; 16],
             sha256: None,
         });
@@ -847,10 +857,11 @@ mod tests {
                 rec.ex_score,
                 rec.min_bp,
                 rec.play_count,
+                rec.clear_count,
                 rec.ruleset,
                 rec.origin
             ),
-            (ex, Some(bp), 1, RulesetId::Lr2, ScoreOrigin::Native)
+            (ex, Some(bp), 1, clears, RulesetId::Lr2, ScoreOrigin::Native)
         );
     }
 

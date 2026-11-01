@@ -2,6 +2,7 @@
 //! ハイスピード・レーンカバーの変更、START/SELECT の 2 度押しでのレーンカバーの表示切り替え）と
 //! `LR2_configsave.cpp`（既定値）を仕様として参照した。
 use domain::play::HsFix;
+use domain::score::SaveMode;
 
 /// ハイスピードの最小・最大・刻み（LR2 の `hsmin`・`hsmax`・`hsmargin` の既定）
 const HS_MIN: i32 = 10;
@@ -50,6 +51,17 @@ impl PlayOptions {
         self.cover = self.cover.clamp(0, 100);
         self.judge_offset = self.judge_offset.clamp(-OFFSET_RANGE, OFFSET_RANGE);
         self
+    }
+
+    /// プレイ後に保存するもの（APP-OPT-05）。オートは保存しない、HS-FIX CONSTANT はランプ（EASY まで）と回数だけ
+    pub fn save_mode(&self) -> Option<SaveMode> {
+        if self.auto {
+            None
+        } else if self.hs_fix == HsFix::Constant {
+            Some(SaveMode::LampOnly)
+        } else {
+            Some(SaveMode::Full)
+        }
     }
 }
 
@@ -215,5 +227,25 @@ mod tests {
             (st.options.cover, st.options.hi_speed, st.cover_shown),
             (cover, hi_speed, shown)
         );
+    }
+
+    /// APP-OPT-05: 保存するもの。オートは保存しない、HS-FIX CONSTANT はランプと回数だけ、それ以外はすべて
+    #[rstest]
+    #[case::normal(false, HsFix::Off, Some(SaveMode::Full))]
+    #[case::hs_fix(false, HsFix::MaxBpm, Some(SaveMode::Full))]
+    #[case::constant(false, HsFix::Constant, Some(SaveMode::LampOnly))]
+    #[case::auto(true, HsFix::Off, None)]
+    #[case::auto_constant(true, HsFix::Constant, None)]
+    fn app_opt_05_save_mode(
+        #[case] auto: bool,
+        #[case] hs_fix: HsFix,
+        #[case] want: Option<SaveMode>,
+    ) {
+        let o = PlayOptions {
+            auto,
+            hs_fix,
+            ..Default::default()
+        };
+        assert_eq!(o.save_mode(), want);
     }
 }

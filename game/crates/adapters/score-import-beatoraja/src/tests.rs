@@ -14,7 +14,7 @@ fn md5(i: u8) -> String {
     format!("{i:02x}").repeat(16)
 }
 
-/// 1 行分: (sha256, mode, clear, [epg,lpg,egr,lgr,egd,lgd,ebd,lbd,epr,lpr,ems,lms], combo, minbp, playcount)
+/// 1 行分: (sha256, mode, clear, [epg,lpg,egr,lgr,egd,lgd,ebd,lbd,epr,lpr,ems,lms], combo, minbp, playcount, clearcount)
 #[derive(Clone)]
 struct Row {
     sha: String,
@@ -24,6 +24,7 @@ struct Row {
     combo: i64,
     minbp: i64,
     plays: i64,
+    clears: i64,
 }
 fn row(i: u8) -> Row {
     Row {
@@ -34,6 +35,7 @@ fn row(i: u8) -> Row {
         combo: 150,
         minbp: 6,
         plays: 12,
+        clears: 5,
     }
 }
 
@@ -60,10 +62,10 @@ fn setup(root: &TempDir, songs: &[u8], rows: &[Row]) -> PathBuf {
     c.execute(SCORE, []).unwrap();
     for r in rows {
         c.execute(
-            "INSERT INTO score(sha256,mode,clear,epg,lpg,egr,lgr,egd,lgd,ebd,lbd,epr,lpr,ems,lms,combo,minbp,playcount) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
+            "INSERT INTO score(sha256,mode,clear,epg,lpg,egr,lgr,egd,lgd,ebd,lbd,epr,lpr,ems,lms,combo,minbp,playcount,clearcount) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)",
             rusqlite::params![
                 r.sha, r.mode, r.clear, r.j[0], r.j[1], r.j[2], r.j[3], r.j[4], r.j[5], r.j[6],
-                r.j[7], r.j[8], r.j[9], r.j[10], r.j[11], r.combo, r.minbp, r.plays
+                r.j[7], r.j[8], r.j[9], r.j[10], r.j[11], r.combo, r.minbp, r.plays, r.clears
             ],
         )
         .unwrap();
@@ -173,24 +175,29 @@ fn imp_brj_05_judges_and_ex(
 
 /// IMP-BRJ-06: コンボ・BP・回数
 #[rstest]
-#[case::plain(150, 6, 12, (150, Some(6), 12))]
-#[case::minbp_unset(150, 2147483647, 12, (150, None, 12))]
-#[case::minbp_negative(150, -1, 12, (150, None, 12))]
+#[case::plain(150, 6, 12, 5, (150, Some(6), 12, 5))]
+#[case::minbp_unset(150, 2147483647, 12, 5, (150, None, 12, 5))]
+#[case::minbp_negative(150, -1, 12, 0, (150, None, 12, 0))]
 fn imp_brj_06_combo_bp_plays(
     root: TempDir,
     #[case] combo: i64,
     #[case] minbp: i64,
     #[case] plays: i64,
-    #[case] expected: (u32, Option<u32>, u32),
+    #[case] clears: i64,
+    #[case] expected: (u32, Option<u32>, u32, u32),
 ) {
     let r = Row {
         combo,
         minbp,
         plays,
+        clears,
         ..row(1)
     };
     let got = import_one(&root, r).unwrap();
-    assert_eq!((got.max_combo, got.min_bp, got.play_count), expected);
+    assert_eq!(
+        (got.max_combo, got.min_bp, got.play_count, got.clear_count),
+        expected
+    );
 }
 
 /// IMP-BRJ-07: ルール・出自・SHA-256

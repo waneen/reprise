@@ -14,7 +14,7 @@
 //! | IMP-BRJ-03 | MD5 は曲 DB（`songdata.db` の `song` テーブル）で sha256 から引く。引けない記録は取り込まない。曲 DB の既定位置は score.db の 2 つ上のフォルダ |
 //! | IMP-BRJ-04 | clear: 0..=10 を NoPlay, Failed, AssistEasy, LightAssistEasy, Easy, Normal, Hard, ExHard, FullCombo, Perfect, Max に。それ以外は NoPlay |
 //! | IMP-BRJ-05 | 判定内訳は FAST/SLOW の合計（epg+lpg 等）、EX スコア = (epg+lpg)×2 + egr+lgr。空 POOR（ems/lms）は含めない |
-//! | IMP-BRJ-06 | combo → 最大コンボ、playcount はそのまま。minbp は負か 2147483647（未設定）なら不明 |
+//! | IMP-BRJ-06 | combo → 最大コンボ、playcount・clearcount はそのまま。minbp は負か 2147483647（未設定）なら不明 |
 //! | IMP-BRJ-07 | ルールは指定のもの、出自は `ImportedFrom(source_name)`、SHA-256 も保持する |
 use application::ports::{PortError, ScoreImporter};
 use domain::chart::ChartHash;
@@ -122,7 +122,7 @@ impl ScoreImporter for BeatorajaScoreDb {
         let db = open(src)?;
         let mut st = db
             .prepare(
-                "SELECT sha256, mode, clear, epg, lpg, egr, lgr, egd, lgd, ebd, lbd, epr, lpr, combo, minbp, playcount FROM score",
+                "SELECT sha256, mode, clear, epg, lpg, egr, lgr, egd, lgd, ebd, lbd, epr, lpr, combo, minbp, playcount, clearcount FROM score",
             )
             .map_err(io)?;
         let song_db = self.song_db.clone().unwrap_or_else(|| {
@@ -136,7 +136,7 @@ impl ScoreImporter for BeatorajaScoreDb {
         let rows = st
             .query_map([], |r| {
                 let sha: Option<String> = r.get(0)?;
-                let v = (1..16)
+                let v = (1..17)
                     .map(|i| r.get::<_, Option<i64>>(i).map(|v| v.unwrap_or(0)))
                     .collect::<Result<Vec<i64>, _>>()?;
                 Ok((sha, v))
@@ -145,7 +145,7 @@ impl ScoreImporter for BeatorajaScoreDb {
         let mut out = vec![];
         for row in rows {
             let (sha, v) = row.map_err(io)?;
-            let [mode, clear, epg, lpg, egr, lgr, egd, lgd, ebd, lbd, epr, lpr, combo, minbp, plays] =
+            let [mode, clear, epg, lpg, egr, lgr, egd, lgd, ebd, lbd, epr, lpr, combo, minbp, plays, clears] =
                 v[..]
             else {
                 unreachable!()
@@ -178,6 +178,7 @@ impl ScoreImporter for BeatorajaScoreDb {
                 max_combo: count(combo),
                 min_bp: (0..UNSET).contains(&minbp).then(|| count(minbp)),
                 play_count: count(plays),
+                clear_count: count(clears),
                 origin: ScoreOrigin::ImportedFrom(self.name.into()),
             });
         }
