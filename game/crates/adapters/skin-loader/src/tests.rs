@@ -13,6 +13,8 @@ fn element(command: &str, index: i32, kind: sc::ElementKind) -> sc::Element {
         timer: None,
         conditions: vec![],
         looping: None,
+        dst_extra: [0; 2],
+        order: 0,
         keyframes: vec![],
     }
 }
@@ -27,6 +29,7 @@ fn doc(kind: i32, images: Vec<sc::ImageEntry>, elements: Vec<sc::Element>) -> sc
         elements,
         directives: vec![],
         diagnostics: vec![],
+        options: Default::default(),
     }
 }
 
@@ -39,7 +42,7 @@ fn doc(kind: i32, images: Vec<sc::ImageEntry>, elements: Vec<sc::Element>) -> sc
 #[case::course_result(15, d::SceneKind::CourseResult)]
 #[case::other(17, d::SceneKind::Other(17))]
 fn adp_sk_01_scene_kind(#[case] kind: i32, #[case] expected: d::SceneKind) {
-    assert_eq!(map_skin(doc(kind, vec![], vec![])).scene, expected);
+    assert_eq!(map_skin(doc(kind, vec![], vec![]), None).scene, expected);
 }
 
 /// ADP-SK-02: 要素種別
@@ -58,7 +61,7 @@ fn adp_sk_02_element_kind(
     #[case] kind: sc::ElementKind,
     #[case] expected: d::ElementKind,
 ) {
-    let s = map_skin(doc(0, vec![], vec![element(command, index, kind)]));
+    let s = map_skin(doc(0, vec![], vec![element(command, index, kind)]), None);
     assert_eq!(s.elements[0].kind, expected);
 }
 
@@ -68,7 +71,10 @@ fn adp_sk_02_element_kind(
 #[case::continue_kw(sc::ImageEntry::Continue, None)]
 #[case::missing(sc::ImageEntry::Missing("x.png".into()), None)]
 fn adp_sk_03_images(#[case] entry: sc::ImageEntry, #[case] expected: Option<PathBuf>) {
-    assert_eq!(map_skin(doc(0, vec![entry], vec![])).images, vec![expected]);
+    assert_eq!(
+        map_skin(doc(0, vec![entry], vec![]), None).images,
+        vec![expected]
+    );
 }
 
 /// ADP-SK-04: キーフレーム等
@@ -85,6 +91,16 @@ fn adp_sk_04_keyframes_and_attributes(
     e.timer = timer;
     e.conditions = vec![sc::ConditionRef(900), sc::ConditionRef(-901)];
     e.looping = Some(500);
+    e.dst_extra = [1, 2];
+    e.order = 7;
+    e.source = Some(sc::Source {
+        image: sc::ImageRef(3),
+        rect: [1, 2, 3, 4],
+        divide: (2, 1),
+        cycle_ms: 100,
+        timer: Some(sc::TimerRef(41)),
+        params: [5, 6, 7, 8, 9],
+    });
     e.keyframes = vec![sc::Keyframe {
         time_ms: 100,
         rect: [1.0, 2.0, 3.0, 4.0],
@@ -95,10 +111,22 @@ fn adp_sk_04_keyframes_and_attributes(
         filter: true,
         accel: 2,
     }];
-    let got = &map_skin(doc(0, vec![], vec![e])).elements[0];
+    let got = &map_skin(doc(0, vec![], vec![e]), None).elements[0];
     assert_eq!(got.timer, expected_timer);
     assert_eq!(got.conditions, vec![d::OptionId(900), d::OptionId(-901)]);
     assert_eq!(got.looping, Some(500));
+    assert_eq!((got.dst_extra, got.order), ([1, 2], 7));
+    assert_eq!(
+        got.source,
+        Some(d::SourceRect {
+            image: 3,
+            rect: [1, 2, 3, 4],
+            divide: (2, 1),
+            cycle_ms: 100,
+            timer: d::TimerId(41),
+            params: [5, 6, 7, 8, 9],
+        })
+    );
     assert_eq!(
         got.keyframes,
         vec![d::Keyframe {
@@ -112,6 +140,39 @@ fn adp_sk_04_keyframes_and_attributes(
             filter: true
         }]
     );
+}
+
+/// ADP-SK-08: 読み込み終了時点の条件
+#[rstest]
+#[case::sorted(&[950, 0, 900], vec![0, 900, 950])]
+#[case::empty(&[], vec![])]
+fn adp_sk_08_options(#[case] ops: &[i32], #[case] expected: Vec<i32>) {
+    let mut dc = doc(0, vec![], vec![]);
+    dc.options = ops.iter().copied().collect();
+    assert_eq!(map_skin(dc, None).options, expected);
+}
+
+/// ADP-SK-09: 抜き色
+#[rstest]
+#[case::default(vec![], Some([0, 255, 0]), Some([0, 255, 0]))]
+#[case::no_default(vec![], None, None)]
+#[case::directive(vec![("TRANSCOLOR", vec!["1", "2", "3"])], Some([0, 255, 0]), Some([1, 2, 3]))]
+#[case::misspelled(vec![("TRANSCLOLR", vec!["4", "5", "6"])], None, Some([4, 5, 6]))]
+#[case::last_wins(vec![("TRANSCOLOR", vec!["1", "2", "3"]), ("TRANSCLOLOR", vec!["7", "8", "300"])], None, Some([7, 8, 255]))]
+fn adp_sk_09_color_key(
+    #[case] directives: Vec<(&str, Vec<&str>)>,
+    #[case] default: Option<[u8; 3]>,
+    #[case] expected: Option<[u8; 3]>,
+) {
+    let mut dc = doc(0, vec![], vec![]);
+    dc.directives = directives
+        .into_iter()
+        .map(|(c, a)| sc::Directive {
+            command: c.into(),
+            args: a.into_iter().map(String::from).collect(),
+        })
+        .collect();
+    assert_eq!(map_skin(dc, default).color_key, expected);
 }
 
 // ---- FsResolver ----

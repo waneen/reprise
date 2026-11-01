@@ -82,6 +82,8 @@ pub struct PlaySession {
     timing: TimingMap,
     input: KeyInput,
     hash: ChartHash,
+    /// 直前のフレームの各レーンの状態
+    keys: BTreeMap<Lane, KeyState>,
 }
 
 impl PlaySession {
@@ -94,11 +96,21 @@ impl PlaySession {
             timing,
             input,
             hash: chart.hash,
+            keys: BTreeMap::new(),
         })
     }
 
     pub fn play(&self) -> &Lr2Play {
         &self.play
+    }
+
+    pub fn timing(&self) -> &TimingMap {
+        &self.timing
+    }
+
+    /// 直前のフレームの各レーンの状態
+    pub fn keys(&self) -> &BTreeMap<Lane, KeyState> {
+        &self.keys
     }
 
     pub fn record(&self) -> ScoreRecord {
@@ -116,6 +128,7 @@ impl PlaySession {
         let events = self
             .play
             .tick(t_ms, |l| keys.get(&l).copied().unwrap_or_default());
+        self.keys = keys;
         for e in &events {
             match e {
                 PlayEvent::Keysound { sound, .. } | PlayEvent::Bgm { sound } => {

@@ -1,18 +1,28 @@
 //! Composition Root + プレゼンテーション層（Bevy はここだけ）。
 //! 記法を増やす = chart-formats/ か skin-formats/ に crate を足して、ここで 1 行登録するだけ。
 //!
-//! 使い方: `reprise <譜面ファイル> [--gauge groove|easy|hard|death|pattack|gattack]`
-//! いまは 1P の 7 鍵（5 鍵）だけを四角形で描く最小のプレイ画面。スキンは未対応。
+//! 使い方: `reprise <譜面ファイル> [--gauge groove|easy|hard|death|pattack|gattack] [--skin <スキン> [--skin-root <フォルダ>]]`
+//! 1P の 7 鍵（5 鍵）のプレイ画面。`--skin` で LR2 のプレイスキンで描き、無ければ四角形だけで描く。
+//! `--skin-root` はスキン中のパスの基準（LR2 なら LR2 本体のフォルダ。既定は今のフォルダ）。
 use application::play::{KeyId, KeyInput, PlaySession, VisibleNote};
+use application::play_skin::PlaySkin;
 use application::ports::{AudioOutput, ChartLoader, ScoreImporter, SkinLoader};
+use bevy::asset::RenderAssetUsages;
 use bevy::audio::AudioSource;
+use bevy::camera::{OrthographicProjection, Projection, ScalingMode};
+use bevy::image::ImageSampler;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
 use bevy::prelude::*;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
+use bevy::sprite::Anchor;
 use bevy::window::{PresentMode, WindowResolution};
 use chart_loader::DecoderLoader;
 use domain::chart::{Chart, Lane, SoundId};
 use domain::play::{GaugeType, Judge, PlayEvent};
+use domain::random::LegacyMt;
+use domain::skin::lr2::{draw_play, pixels_per_beat, Quad};
+use domain::skin::{SceneKind, Skin};
 use skin_loader::DecoderSkinLoader;
 use std::collections::HashMap;
 use std::io::Cursor;
@@ -22,8 +32,10 @@ use std::time::Instant;
 
 /// 再生開始から 0ms（譜面の先頭）までの待ち時間
 const LEAD_IN_MS: i64 = 2000;
-/// 判定ラインから上端までに見える拍数
+/// 判定ラインから上端までに見える拍数（スキン無しのとき）
 const VISIBLE_BEATS: f64 = 4.0;
+/// ハイスピード（×100。LR2 の既定）
+const HI_SPEED: f64 = 200.0;
 
 /// 既定のキー配置（1P）。皿は 2 つのキーで左右回転を表す
 const KEYMAP: [(KeyCode, u8); 9] = [
@@ -53,20 +65,82 @@ fn chart_loaders() -> Vec<Box<dyn ChartLoader>> {
     ]
 }
 
-/// スキンの読み込み（まだ画面からは使わない。登録だけしておく）
+/// スキンの読み込み（描けるのは LR2 のプレイスキン）
 fn skin_loaders(root: PathBuf) -> Vec<Box<dyn SkinLoader>> {
     vec![
         Box::new(DecoderSkinLoader {
             decoder: reprise_skin_lr2csv::Lr2CsvDecoder::default(),
             settings: Default::default(),
             root: root.clone(),
+            // LR2 の既定の抜き色
+            default_color_key: Some([0, 255, 0]),
         }),
         Box::new(DecoderSkinLoader {
             decoder: reprise_skin_beatoraja::BeatorajaJsonDecoder,
             settings: Default::default(),
             root,
+            default_color_key: None,
         }),
     ]
+}
+
+/// 読み込んだスキン画像（幅, 高さ, RGBA）
+type Pixels = (u32, u32, Vec<u8>);
+
+/// スキン画像を RGBA にする。アルファの無い画像は抜き色の画素を透明にする
+fn load_image(path: &Path, color_key: Option<[u8; 3]>) -> Result<Pixels, String> {
+    let img = image::ImageReader::open(path)
+        .and_then(|r| r.with_guessed_format())
+        .map_err(|e| format!("{}: {e}", path.display()))?
+        .decode()
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    let has_alpha = img.color().has_alpha();
+    let mut rgba = img.into_rgba8();
+    if let (false, Some(key)) = (has_alpha, color_key) {
+        for p in rgba.pixels_mut() {
+            if p.0[..3] == key {
+                p.0[3] = 0;
+            }
+        }
+    }
+    Ok((rgba.width(), rgba.height(), rgba.into_raw()))
+}
+
+/// スキンと画像を読み込む
+fn load_skin(path: &Path, root: PathBuf) -> Result<(Skin, Vec<Option<Pixels>>), String> {
+    let loaders = skin_loaders(root);
+    let loader = loaders
+        .iter()
+        .find(|l| l.can_load(path))
+        .ok_or_else(|| format!("スキンとして読めない: {}", path.display()))?;
+    let mut rng = LegacyMt::new(seed());
+    let skin = loader
+        .load(path, &mut rng)
+        .map_err(|e| format!("スキンを読めない: {e:?}"))?;
+    if !matches!(skin.scene, SceneKind::Play7 | SceneKind::Play5) {
+        return Err(format!(
+            "7 鍵・5 鍵のプレイスキンではない: {:?}",
+            skin.scene
+        ));
+    }
+    let images = skin
+        .images
+        .iter()
+        .map(|p| {
+            let p = p.as_ref()?;
+            load_image(p, skin.color_key)
+                .map_err(|e| eprintln!("スキン画像を読めない: {e}"))
+                .ok()
+        })
+        .collect();
+    Ok((skin, images))
+}
+
+fn seed() -> u32 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u32)
+        .unwrap_or(0)
 }
 
 /// 記録の取り込み（まだ画面からは使わない。登録だけしておく）
@@ -105,11 +179,7 @@ type Sounds = Vec<(SoundId, Arc<[u8]>)>;
 /// 譜面と音を読み込む
 fn load(path: &Path) -> Result<(Chart, Sounds), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    let seed = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u32)
-        .unwrap_or(0);
-    let (chart, _) = application::usecase::load_chart(&chart_loaders(), path, &bytes, seed)
+    let (chart, _) = application::usecase::load_chart(&chart_loaders(), path, &bytes, seed())
         .map_err(|e| format!("譜面を読めない: {e:?}"))?;
     let dir = path.parent().unwrap_or(Path::new("."));
     let mut sounds = vec![];
@@ -137,9 +207,21 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut chart_path = None;
     let mut gauge = GaugeType::Groove;
+    let mut skin_path = None;
+    let mut skin_root = std::env::current_dir().unwrap_or_default();
     let mut it = args.iter();
     while let Some(a) = it.next() {
-        if a == "--gauge" {
+        if a == "--skin" || a == "--skin-root" {
+            let Some(v) = it.next() else {
+                eprintln!("{a} の後にパスが要る");
+                std::process::exit(2);
+            };
+            if a == "--skin" {
+                skin_path = Some(PathBuf::from(v));
+            } else {
+                skin_root = PathBuf::from(v);
+            }
+        } else if a == "--gauge" {
             match it.next().and_then(|g| parse_gauge(g)) {
                 Some(g) => gauge = g,
                 None => {
@@ -153,14 +235,18 @@ fn main() {
     }
     let Some(chart_path) = chart_path else {
         eprintln!(
-            "使い方: reprise <譜面ファイル> [--gauge groove|easy|hard|death|pattack|gattack]"
+            "使い方: reprise <譜面ファイル> [--gauge groove|easy|hard|death|pattack|gattack] [--skin <スキン> [--skin-root <フォルダ>]]"
         );
         std::process::exit(2);
     };
-    let _ = (
-        skin_loaders(std::env::current_dir().unwrap_or_default()),
-        score_importers(),
-    );
+    let _ = score_importers();
+    let skin = match skin_path.map(|p| load_skin(&p, skin_root)).transpose() {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("{e}");
+            std::process::exit(1);
+        }
+    };
     let (chart, sounds) = match load(&chart_path) {
         Ok(v) => v,
         Err(e) => {
@@ -179,6 +265,26 @@ fn main() {
         std::process::exit(2);
     };
     let title = format!("reprise - {} [{}]", chart.meta.title, chart.meta.artist);
+    let (skin_play, pending_images) = match skin {
+        Some((skin, images)) => {
+            let play = PlaySkin::new(&chart, &session, gauge, LEAD_IN_MS, &skin.options);
+            let sizes = images
+                .iter()
+                .map(|i| i.as_ref().map(|(w, h, _)| (*w, *h)))
+                .collect();
+            (
+                Some(SkinPlay {
+                    skin,
+                    play,
+                    handles: vec![],
+                    sizes,
+                    rng: LegacyMt::new(seed()),
+                }),
+                images,
+            )
+        }
+        None => (None, vec![]),
+    };
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -196,11 +302,32 @@ fn main() {
             start: None,
             last_judge: None,
             sounds: HashMap::new(),
+            skin: skin_play,
         })
         .insert_resource(PendingSounds(sounds))
+        .insert_resource(PendingImages(pending_images))
         .add_systems(Startup, setup)
-        .add_systems(Update, (play_frame, draw_notes, draw_hud).chain())
+        .add_systems(
+            Update,
+            (
+                play_frame,
+                (draw_notes, draw_hud).run_if(|g: Res<Game>| g.skin.is_none()),
+                draw_skin.run_if(|g: Res<Game>| g.skin.is_some()),
+            )
+                .chain(),
+        )
         .run();
+}
+
+/// LR2 スキンで描くための状態
+struct SkinPlay {
+    skin: Skin,
+    play: PlaySkin,
+    /// スキン画像（読めなかったものは None）
+    handles: Vec<Option<Handle<Image>>>,
+    sizes: Vec<Option<(u32, u32)>>,
+    /// ゲージのちらつき用（LR2 の `GetRand`）
+    rng: LegacyMt,
 }
 
 #[derive(Resource)]
@@ -211,6 +338,7 @@ struct Game {
     /// 最後の判定と、そのフレーム時刻
     last_judge: Option<(Judge, i64)>,
     sounds: HashMap<SoundId, Handle<AudioSource>>,
+    skin: Option<SkinPlay>,
 }
 
 impl Game {
@@ -221,6 +349,12 @@ impl Game {
 
 #[derive(Resource)]
 struct PendingSounds(Sounds);
+
+#[derive(Resource)]
+struct PendingImages(Vec<Option<Pixels>>);
+
+#[derive(Component)]
+struct SkinSprite;
 
 #[derive(Component)]
 struct NoteSprite;
@@ -239,14 +373,51 @@ fn lane_x(lane: u8) -> (f32, f32) {
 fn setup(
     mut commands: Commands,
     mut pending: ResMut<PendingSounds>,
+    mut pending_images: ResMut<PendingImages>,
     mut audio: ResMut<Assets<AudioSource>>,
+    mut images: ResMut<Assets<Image>>,
     mut game: ResMut<Game>,
 ) {
-    commands.spawn(Camera2d);
     for (id, bytes) in pending.0.drain(..) {
         let h = audio.add(AudioSource { bytes });
         game.sounds.insert(id, h);
     }
+    if let Some(sp) = game.skin.as_mut() {
+        // スキンの解像度を窓いっぱいに（縦横比は保つ）
+        let (w, h) = sp.skin.resolution;
+        commands.spawn((
+            Camera2d,
+            Projection::Orthographic(OrthographicProjection {
+                scaling_mode: ScalingMode::AutoMin {
+                    min_width: w as f32,
+                    min_height: h as f32,
+                },
+                ..OrthographicProjection::default_2d()
+            }),
+        ));
+        sp.handles = pending_images
+            .0
+            .drain(..)
+            .map(|p| {
+                let (w, h, data) = p?;
+                let mut img = Image::new(
+                    Extent3d {
+                        width: w,
+                        height: h,
+                        depth_or_array_layers: 1,
+                    },
+                    TextureDimension::D2,
+                    data,
+                    TextureFormat::Rgba8UnormSrgb,
+                    RenderAssetUsages::default(),
+                );
+                img.sampler = ImageSampler::nearest();
+                Some(images.add(img))
+            })
+            .collect();
+        return;
+    }
+    commands.spawn(Camera2d);
     // レーンの背景と判定ライン
     for lane in 0..=7u8 {
         let (x, w) = lane_x(lane);
@@ -318,10 +489,84 @@ fn play_frame(
         sounds: &game.sounds,
     };
     let out = game.session.frame(t, &events, &mut audio);
+    if let Some(sp) = game.skin.as_mut() {
+        sp.play.update(t, &game.session, &out);
+    }
     for e in out {
         if let PlayEvent::Judge { judge, .. } = e {
             game.last_judge = Some((judge, t));
         }
+    }
+}
+
+/// 回転の中心（テンキー配置）→ 四角形の中での位置（左上 0、右下 1）
+fn pivot(center: u8) -> (f32, f32) {
+    match center {
+        1 => (0.0, 1.0),
+        2 => (0.5, 1.0),
+        3 => (1.0, 1.0),
+        4 => (0.0, 0.5),
+        6 => (1.0, 0.5),
+        7 => (0.0, 0.0),
+        8 => (0.5, 0.0),
+        9 => (1.0, 0.0),
+        _ => (0.5, 0.5),
+    }
+}
+
+/// スキンの四角形を Bevy のスプライトにする（スキン座標は左上原点・y 下向き、画面は中央原点・y 上向き）
+fn quad_sprite(
+    q: &Quad,
+    image: Handle<Image>,
+    res: (u32, u32),
+    z: f32,
+) -> (Sprite, Anchor, Transform) {
+    let [x, y, w, h] = q.dst;
+    let [sx, sy, sw, sh] = q.src;
+    let (fx, fy) = pivot(q.center);
+    let [a, r, g, b] = q.argb.map(|c| c as f32 / 255.0);
+    let sprite = Sprite {
+        image,
+        rect: Some(Rect::new(sx, sy, sx + sw, sy + sh)),
+        custom_size: Some(Vec2::new(w, h)),
+        color: Color::srgba(r, g, b, a),
+        ..default()
+    };
+    let px = x + fx * w - res.0 as f32 / 2.0;
+    let py = res.1 as f32 / 2.0 - (y + fy * h);
+    let transform =
+        Transform::from_xyz(px, py, z).with_rotation(Quat::from_rotation_z(-q.angle.to_radians()));
+    (sprite, Anchor(Vec2::new(fx - 0.5, 0.5 - fy)), transform)
+}
+
+/// LR2 スキンで描く（毎フレーム作り直す）
+fn draw_skin(mut commands: Commands, mut game: ResMut<Game>, old: Query<Entity, With<SkinSprite>>) {
+    for e in &old {
+        commands.entity(e).despawn();
+    }
+    let game = &mut *game;
+    let Some(sp) = game.skin.as_mut() else {
+        return;
+    };
+    let ppb = pixels_per_beat(HI_SPEED);
+    let visible = sp.skin.resolution.1 as f64 * 2.0 / ppb;
+    let tremble = sp.rng.get_rand(2) as i32;
+    let mut view = sp.play.view(&game.session, HI_SPEED, visible, tremble);
+    // 途中終了したらノーツは描かない
+    if game.session.play().is_dead() {
+        view.notes.clear();
+    }
+    let sizes = &sp.sizes;
+    let quads = draw_play(&sp.skin, &sp.play, &view, &|i| {
+        sizes.get(i as usize).copied().flatten()
+    });
+    for (i, q) in quads.iter().enumerate() {
+        let Some(Some(h)) = sp.handles.get(q.image as usize) else {
+            continue;
+        };
+        let (sprite, anchor, transform) =
+            quad_sprite(q, h.clone(), sp.skin.resolution, i as f32 * 0.001);
+        commands.spawn((sprite, anchor, transform, SkinSprite));
     }
 }
 

@@ -18,6 +18,7 @@ MIT OR Apache-2.0（LICENSE-MIT / LICENSE-APACHE）。
 - **serde_json**: MIT OR Apache-2.0
 - **rusqlite / libsqlite3-sys**: MIT。同梱してビルドする **SQLite** 本体はパブリックドメイン
 - **Bevy**: MIT OR Apache-2.0。既定フォントとして **Fira Mono**（SIL Open Font License 1.1）をバイナリに含む
+- **image**（スキン画像の読み込み）: MIT OR Apache-2.0
 - **rodio**: MIT OR Apache-2.0。mp3 の読み込みに使う **symphonia** は MPL-2.0（改変せずに使用。ソースは crates.io で入手可能）
 - BSD-3-Clause・ISC・BSL-1.0・Zlib などの寛容なライセンスの間接依存を含む
 - その他の間接依存（hashbrown, foldhash（Zlib）, memchr（Unlicense OR MIT）など）も寛容なライセンス

@@ -6,10 +6,12 @@
 //! | ADP-SK-01 | シーン種別: LR2 の種別番号 0..=15 を `SceneKind` に、それ以外は `Other` |
 //! | ADP-SK-02 | 要素種別: IMAGE/NUMBER/TEXT/SLIDER/BARGRAPH/BUTTON は対応する種別、NOTE は `NoteLane{lane=添字}`、それ以外は `Other{command,index}` |
 //! | ADP-SK-03 | 画像: 解決できたものは Some、`Continue`/`Missing` は None |
-//! | ADP-SK-04 | キーフレーム・条件・タイマー（未指定は 0）・合成をそのまま写す |
+//! | ADP-SK-04 | キーフレーム・条件・タイマー（未指定は 0）・合成・SRC の追加引数・DST の追加引数・描画順をそのまま写す |
 //! | ADP-SK-05 | `FsResolver`: パスは root 基準。完全一致が無ければ各階層を大小無視で探す（Windows 前提のスキンを他 OS で読むため） |
 //! | ADP-SK-06 | `FsResolver`: ファイル名の `*` は一致するファイル（名前を小文字にした順）から `LegacyMt::get_rand(n-1)` で選ぶ（LR2 `GetRandomFile`） |
 //! | ADP-SK-07 | `FsResolver`: 一致するファイルが無ければ None |
+//! | ADP-SK-08 | 読み込み終了時点で真の条件を昇順で写す |
+//! | ADP-SK-09 | 抜き色: 最後の `#TRANSCOLOR,r,g,b`（LR2 が受け付ける綴り違い `TRANSCLOLR`/`TRANSCLOLOR` も）、無ければローダの既定 |
 use application::ports::{PortError, SkinLoader};
 use domain::{random::LegacyMt, skin as d};
 use reprise_skin_core as sc;
@@ -103,7 +105,7 @@ impl FileResolver for FsResolver<'_> {
 }
 
 // ---------------------------------------------------------------------------
-// 写像（ADP-SK-01..04）
+// 写像（ADP-SK-01..04, 08, 09）
 // ---------------------------------------------------------------------------
 
 pub fn scene_kind(kind: i32) -> d::SceneKind {
@@ -185,9 +187,31 @@ fn blend(b: sc::Blend) -> d::Blend {
     }
 }
 
-pub fn map_skin(doc: sc::SkinDocument) -> d::Skin {
+/// LR2 の抜き色の命令（綴り違いも LR2 は受け付ける）
+const TRANSCOLOR: [&str; 3] = ["TRANSCOLOR", "TRANSCLOLR", "TRANSCLOLOR"];
+
+/// `default_color_key` は `#TRANSCOLOR` が無いときの抜き色（LR2 は (0, 255, 0)）
+pub fn map_skin(doc: sc::SkinDocument, default_color_key: Option<[u8; 3]>) -> d::Skin {
     let timer = |t: Option<sc::TimerRef>| d::TimerId(t.map(|t| t.0).unwrap_or(0));
+    let color_key = doc
+        .directives
+        .iter()
+        .rev()
+        .find(|d| TRANSCOLOR.contains(&d.command.as_str()))
+        .map(|d| {
+            let v = |i: usize| {
+                d.args
+                    .get(i)
+                    .and_then(|s| s.trim().parse::<i32>().ok())
+                    .unwrap_or(0)
+                    .clamp(0, 255) as u8
+            };
+            [v(0), v(1), v(2)]
+        })
+        .or(default_color_key);
     d::Skin {
+        color_key,
+        options: doc.options.into_iter().collect(),
         scene: scene_kind(doc.header.kind),
         resolution: doc.header.resolution,
         images: doc
@@ -209,10 +233,13 @@ pub fn map_skin(doc: sc::SkinDocument) -> d::Skin {
                     divide: s.divide,
                     cycle_ms: s.cycle_ms,
                     timer: timer(s.timer),
+                    params: s.params,
                 }),
                 timer: timer(e.timer),
                 conditions: e.conditions.iter().map(|c| d::OptionId(c.0)).collect(),
                 looping: e.looping,
+                dst_extra: e.dst_extra,
+                order: e.order,
                 keyframes: e
                     .keyframes
                     .iter()
@@ -241,6 +268,8 @@ pub struct DecoderSkinLoader<D: SkinDecoder> {
     pub settings: SkinSettings,
     /// スキン中のパスの基準（LR2 なら LR2 本体のフォルダ）
     pub root: PathBuf,
+    /// `#TRANSCOLOR` が無いときの抜き色
+    pub default_color_key: Option<[u8; 3]>,
 }
 
 impl<D: SkinDecoder> SkinLoader for DecoderSkinLoader<D> {
@@ -256,7 +285,7 @@ impl<D: SkinDecoder> SkinLoader for DecoderSkinLoader<D> {
             .decoder
             .decode(p, &self.settings, &mut files)
             .map_err(|e| PortError::Parse(format!("{e:?}")))?;
-        Ok(map_skin(doc))
+        Ok(map_skin(doc, self.default_color_key))
     }
 }
 

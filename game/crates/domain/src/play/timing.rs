@@ -1,4 +1,4 @@
-//! 拍 ⇄ 時刻（µs）の変換。BPM 変化と STOP を区間表にして持つ（DOM-TIM-01..05）。
+//! 拍 ⇄ 時刻（µs）の変換。BPM 変化と STOP を区間表にして持つ（DOM-TIM-01..06）。
 use crate::chart::{Beat, Chart, TimingEvent};
 
 /// `#BPM` が無い譜面の初期 BPM（BMS 仕様の既定値）
@@ -88,6 +88,13 @@ impl TimingMap {
         t.round() as i64
     }
 
+    /// 時刻（µs）の BPM。その時刻を含む区間の BPM で、停止中は停止した拍の BPM（DOM-TIM-06）
+    pub fn bpm_at(&self, t_us: i64) -> f64 {
+        let t = t_us as f64;
+        let i = self.segments.partition_point(|s| s.arrive_us <= t);
+        self.segments[i.saturating_sub(1)].bpm
+    }
+
     /// 時刻（µs）の拍。停止中は停止している拍（DOM-TIM-05）
     pub fn beat_at(&self, t_us: i64) -> Beat {
         let t = t_us as f64;
@@ -172,5 +179,16 @@ mod tests {
     #[case::before_zero(vec![], -500_000, -1.0)]
     fn dom_tim_05_beat_at(#[case] evs: Vec<TimingEvent>, #[case] us: i64, #[case] beat: f64) {
         assert_eq!(TimingMap::new(Some(120.0), &evs).beat_at(us), Beat(beat));
+    }
+
+    /// DOM-TIM-06: 時刻の BPM はその時刻を含む区間の BPM（停止中は停止した拍の BPM、0 より前は初期 BPM）
+    #[rstest]
+    #[case::initial(vec![], 1_000_000, 120.0)]
+    #[case::before_change(vec![bpm(4.0, 240.0)], 1_999_999, 120.0)]
+    #[case::at_change(vec![bpm(4.0, 240.0)], 2_000_000, 240.0)]
+    #[case::during_stop(vec![bpm(4.0, 60.0), stop(4.0, 1.0)], 2_500_000, 60.0)]
+    #[case::before_zero(vec![], -500_000, 120.0)]
+    fn dom_tim_06_bpm_at(#[case] evs: Vec<TimingEvent>, #[case] us: i64, #[case] want: f64) {
+        assert_eq!(TimingMap::new(Some(120.0), &evs).bpm_at(us), want);
     }
 }

@@ -2,6 +2,10 @@
 //! 「どの条件で・どのタイマーで・何を・どう補間して出すか」の宣言だけを持つ。
 use std::path::PathBuf;
 
+pub mod lr2;
+#[cfg(test)]
+mod tests;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TimerId(pub i32);
 /// 表示条件（負値は否定）
@@ -15,6 +19,10 @@ pub struct Skin {
     /// 画像（解決できなかったものは None）
     pub images: Vec<Option<PathBuf>>,
     pub elements: Vec<Element>,
+    /// 読み込み終了時点で真の条件（スキン設定の選択など。描画時の条件判定にも使う）
+    pub options: Vec<i32>,
+    /// 抜き色（アルファの無い画像でこの色を透明にする）
+    pub color_key: Option<[u8; 3]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -45,6 +53,10 @@ pub struct Element {
     pub timer: TimerId,
     pub conditions: Vec<OptionId>,
     pub looping: Option<i32>,
+    /// 条件以外の DST 引数（LR2 の第 21, 22 引数。第 21 引数 1/2 は 1P/2P の皿の角度で回す）
+    pub dst_extra: [i32; 2],
+    /// 描画順（小さいほど奥。同じなら並び順）
+    pub order: u32,
     pub keyframes: Vec<Keyframe>,
 }
 
@@ -56,6 +68,8 @@ pub struct SourceRect {
     pub divide: (u32, u32),
     pub cycle_ms: i32,
     pub timer: TimerId,
+    /// 種別ごとの追加引数（LR2 の SRC 第 11..15 引数）
+    pub params: [i32; 5],
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

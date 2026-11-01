@@ -158,6 +158,8 @@ struct Ctx<'a> {
     elements: Vec<Element>,
     directives: Vec<Directive>,
     diags: Vec<Diagnostic>,
+    /// 処理した命令行の数（描画順）
+    lines: u32,
 }
 
 pub fn decode(
@@ -182,6 +184,7 @@ pub fn decode(
         elements: vec![],
         directives: vec![],
         diags: vec![],
+        lines: 0,
     };
     cx.process(path, &text, 0);
     Ok(SkinDocument {
@@ -191,6 +194,7 @@ pub fn decode(
         elements: cx.elements,
         directives: cx.directives,
         diagnostics: cx.diags,
+        options: cx.ops,
     })
 }
 
@@ -300,6 +304,7 @@ impl Ctx<'_> {
             if ifs.skipping(self.dialect) {
                 continue;
             }
+            self.lines += 1;
             self.command(file, no, &cmd, &row, depth);
         }
     }
@@ -463,6 +468,8 @@ impl Ctx<'_> {
             timer: None,
             conditions: vec![],
             looping: None,
+            dst_extra: [0; 2],
+            order: 0,
             keyframes: vec![],
         });
     }
@@ -491,6 +498,7 @@ impl Ctx<'_> {
                         e.timer = None;
                         e.conditions.clear();
                         e.looping = None;
+                        e.dst_extra = [0; 2];
                         e.keyframes.clear();
                         self.elements.push(e);
                         self.elements.len() - 1
@@ -537,11 +545,13 @@ impl Ctx<'_> {
         if e.keyframes.is_empty() {
             e.looping = Some(row.v(16));
             e.timer = Some(TimerRef(row.v(17)));
-            e.conditions = (18..=22)
+            e.conditions = (18..=20)
                 .map(|i| row.v(i))
                 .filter(|v| *v != 0)
                 .map(ConditionRef)
                 .collect();
+            e.dst_extra = [row.v(21), row.v(22)];
+            e.order = self.lines;
         }
         e.keyframes.push(kf);
     }

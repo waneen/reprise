@@ -18,7 +18,7 @@
 //! | BRJ-HDR-01 | ヘッダ: `type`（既定 -1）・`name`・`author`・`w`/`h`（既定 1280x720）。`type` が負ならスキンではない |
 //! | BRJ-HDR-02 | `property` は `Custom::Choice`（項目名と op）、`filepath` は `Custom::File`（`path` と `def`）。出現順 |
 //! | BRJ-HDR-03 | `fadeout` `input` `scene` `close` `loadend` `playstart` `judgetimer` `finishmargin` は書かれていれば大文字名の `directives` にする |
-//! | BRJ-OPT-01 | 有効な条件 = 設定の条件 ∪ 各 `property` の選択項目の op（設定が項目に無ければ `def` 名の項目、それも無ければ先頭） |
+//! | BRJ-OPT-01 | 有効な条件 = 設定の条件 ∪ 各 `property` の選択項目の op（設定が項目に無ければ `def` 名の項目、それも無ければ先頭）。文書の `options` にも残す |
 //! | BRJ-IF-01 | 配列の要素 `{"if":…,"value":x}` は条件が真なら x、`{"if":…,"values":[…]}` はその位置に展開。`value(s)` が無ければ普通の要素 |
 //! | BRJ-IF-02 | 条件: 正の n は n が有効、負の -n は n が無効、配列は AND、配列の中の配列は OR、それ以外は偽。ヘッダの読み取りでは有効な条件は空 |
 //! | BRJ-INC-01 | `{"include":"パス"}` は配列の要素ならその位置に中身（配列）を展開、それ以外の位置なら置き換える。パスは取り込み元のフォルダ基準。読めなければ配列は空・値は null（診断）。深さ 16 まで |
