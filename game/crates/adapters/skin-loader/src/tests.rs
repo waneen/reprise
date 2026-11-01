@@ -1,5 +1,6 @@
 //! 仕様ルール（lib.rs の表）とテスト関数は 1 対 1。関数名の接頭辞がルール ID。
 use super::*;
+use file_system::StdFs;
 use rstest::{fixture, rstest};
 use std::fs;
 use tempfile::TempDir;
@@ -265,6 +266,7 @@ fn adp_sk_05_resolve_relative_case_insensitive(
 ) {
     let mut rng = LegacyMt::new(1);
     let mut r = FsResolver {
+        fs: &StdFs,
         root: tree.path().to_path_buf(),
         rng: &mut rng,
     };
@@ -280,6 +282,7 @@ fn adp_sk_05_resolve_relative_case_insensitive(
 fn adp_sk_06_wildcard_picked_by_legacy_mt(tree: TempDir, #[case] seed: u32) {
     let mut rng = LegacyMt::new(seed);
     let mut r = FsResolver {
+        fs: &StdFs,
         root: tree.path().to_path_buf(),
         rng: &mut rng,
     };
@@ -297,6 +300,7 @@ fn adp_sk_06_wildcard_picked_by_legacy_mt(tree: TempDir, #[case] seed: u32) {
 fn adp_sk_07_no_match_is_none(tree: TempDir, #[case] pattern: &str) {
     let mut rng = LegacyMt::new(1);
     let mut r = FsResolver {
+        fs: &StdFs,
         root: tree.path().to_path_buf(),
         rng: &mut rng,
     };

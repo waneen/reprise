@@ -39,13 +39,14 @@ game/reprise (Bevy, Composition Root)
 | crate | 役割 |
 |---|---|
 | domain | 確定譜面・拍⇄時刻（TimingMap）・判定/ゲージ(Ruleset)・プレイ進行（オートプレイを含む）・ノーツの流れる位置（`play::scroll`: HS-FIX）・LR2互換乱数・スコア・スキンモデル・LR2 スキンの描画計算（`skin::lr2`: 状態を問い合わせて描く四角形の列を返す） |
-| application | ユースケース（譜面読み込み・記録取り込み・プレイ: 入力→フレームのレーン状態、音の出力、描画位置、プレイオプションとプレイ中の操作（`play_options`）、LR2 スキン用のタイマー・条件・数値（`PlaySkin`））、ポート（ChartLoader / SkinLoader / ScoreImporter / ScoreRepository / Clock / AudioOutput） |
+| application | ユースケース（譜面読み込み・記録取り込み・プレイ: 入力→フレームのレーン状態、音の出力、描画位置、プレイオプションとプレイ中の操作（`play_options`）、LR2 スキン用のタイマー・条件・数値（`PlaySkin`））、ポート（ChartLoader / SkinLoader / ScoreImporter / ScoreRepository / FileSystem / Clock / AudioOutput） |
 | adapters/chart-loader | reprise-chart-core → domain（小節→拍、MD5/SHA-256）、LegacyMt を RandomSource に適合、音・画像ファイルの解決（LR2 の拡張子違いの探し方） |
-| adapters/skin-loader | reprise-skin-core → domain（`#TRANSCOLOR` の抜き色、フォント。画像フォントの画像はスキンの画像の後ろに足す）、実ファイル用 `FsResolver`（大小無視・`*` を LegacyMt で乱択） |
+| adapters/skin-loader | reprise-skin-core → domain（`#TRANSCOLOR` の抜き色、フォント。画像フォントの画像はスキンの画像の後ろに足す）、FileSystem の上の `FsResolver`（大小無視・`*` を LegacyMt で乱択） |
 | adapters/score-import-lr2 | LR2 のスコア DB（sqlite）→ ScoreRecord |
 | adapters/score-import-beatoraja | beatoraja / LR2oraja の score.db（sqlite）→ ScoreRecord（MD5 は songdata.db で引く） |
-| adapters/score-db | reprise 自身の記録の保存先（sqlite。ScoreRepository の実装） |
-| reprise | Bevy（入力=Controller, 描画=Presenter/View）と組み立て。プレイ画面を LR2 スキン（無ければ四角形）で描く（1 ループ = 1 フレームで入力を読み、垂直同期なしで回す。スキン画像は抜き色を、BGA の画像は黒を透明にしてから Bevy に渡し、同じ画像・合成モード・フィルタが続く四角形を毎フレーム 1 つのメッシュにまとめ、合成モードはマテリアルのブレンド設定で描く。システムフォントの文字列は Bevy の Text2d（OS のフォントを探す）で描き、幅が決まってから LR2 と同じ倍率で置く） |
+| adapters/score-db | reprise 自身の記録の保存先（sqlite。ScoreRepository の実装。ネイティブ版だけ） |
+| adapters/file-system | FileSystem の実装（ディスクの `StdFs`、ブラウザ版でページから渡されたファイルを置く `MemFs`） |
+| reprise | Bevy（入力=Controller, 描画=Presenter/View）と組み立て。プレイ画面を LR2 スキン（無ければ四角形）で描く（1 ループ = 1 フレームで入力を読み、垂直同期なしで回す。スキン画像は抜き色を、BGA の画像は黒を透明にしてから Bevy に渡し、同じ画像・合成モード・フィルタが続く四角形を毎フレーム 1 つのメッシュにまとめ、合成モードはマテリアルのブレンド設定で描く。システムフォントの文字列は Bevy の Text2d（OS のフォントを探す）で描き、幅が決まってから LR2 と同じ倍率で置く）。ネイティブとブラウザ（wasm）で違うところ（起動引数・ファイル・記録の保存先・乱数の種）は `platform` にまとめる |
 
 ## 記法の追加手順
 1. `chart-formats/crates/`（または `skin-formats/crates/`）に crate を作り `ChartDecoder`（`SkinDecoder`）を実装
@@ -78,4 +79,4 @@ beatoraja の判定・ゲージ（`BeatorajaRuleset`）は beatoraja の 7 鍵�
 
 ## ビルド
 各ディレクトリで `cargo test`（game は兄弟ディレクトリを path 参照するので3つ揃えて配置）。
-CI はテストと lint だけ。クロスビルドは手元で `bash tools/cross-build.sh <target>`
+CI はテストと lint だけ。クロスビルドは手元で `bash tools/cross-build.sh <target>`、ブラウザ版は `bash tools/web-build.sh`（`web/` を配信）

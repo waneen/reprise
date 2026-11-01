@@ -5,12 +5,13 @@
 //! 1P の 7 鍵（5 鍵）のプレイ画面。`--skin` で LR2 のプレイスキンで描き、無ければ四角形だけで描く。
 //! `--skin-root` はスキン中のパスの基準（LR2 なら LR2 本体のフォルダ。既定は今のフォルダ）。
 //! 記録は `--data` のフォルダ（既定は今のフォルダの `reprise-data`）の `score.db` に保存する。
+mod platform;
 mod skin_render;
 
 use application::play::{KeyId, KeyInput, PlaySession, VisibleNote};
 use application::play_options::{ControlInput, PlayOptions};
 use application::play_skin::PlaySkin;
-use application::ports::{AudioOutput, ChartLoader, ScoreImporter, SkinLoader};
+use application::ports::{AudioOutput, ChartLoader, FileSystem, SkinLoader};
 use application::usecase::SavedScore;
 use bevy::asset::RenderAssetUsages;
 use bevy::audio::AudioSource;
@@ -20,6 +21,7 @@ use bevy::image::ImageSampler;
 use bevy::input::keyboard::KeyboardInput;
 use bevy::input::mouse::MouseWheel;
 use bevy::input::ButtonState;
+use bevy::platform::time::Instant;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite::{update_text2d_layout, Anchor};
@@ -33,14 +35,13 @@ use domain::random::LegacyMt;
 use domain::score::{SaveMode, ScoreRecord};
 use domain::skin::lr2::{draw_play, Draw, Quad, TextRun};
 use domain::skin::{SceneKind, Skin};
-use score_db::SqliteScoreDb;
+use platform::{fatal, seed, Scores};
 use skin_loader::DecoderSkinLoader;
 use skin_render::{SkinMaterial, SkinRenderPlugin};
 use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 /// 再生開始から 0ms（譜面の先頭）までの待ち時間（スキン無しのとき。スキンがあればスキンの場面の時間）
 const LEAD_IN_MS: i64 = 2000;
@@ -85,10 +86,11 @@ fn chart_loaders() -> Vec<Box<dyn ChartLoader>> {
 }
 
 /// スキンの読み込み（描けるのは LR2 のプレイスキン）
-fn skin_loaders(root: PathBuf) -> Vec<Box<dyn SkinLoader>> {
+fn skin_loaders(fs: &Arc<dyn FileSystem>, root: PathBuf) -> Vec<Box<dyn SkinLoader>> {
     vec![
         Box::new(DecoderSkinLoader {
             decoder: reprise_skin_lr2csv::Lr2CsvDecoder::default(),
+            fs: fs.clone(),
             settings: Default::default(),
             root: root.clone(),
             // LR2 の既定の抜き色
@@ -96,6 +98,7 @@ fn skin_loaders(root: PathBuf) -> Vec<Box<dyn SkinLoader>> {
         }),
         Box::new(DecoderSkinLoader {
             decoder: reprise_skin_beatoraja::BeatorajaJsonDecoder,
+            fs: fs.clone(),
             settings: Default::default(),
             root,
             default_color_key: None,
@@ -107,9 +110,14 @@ fn skin_loaders(root: PathBuf) -> Vec<Box<dyn SkinLoader>> {
 type Pixels = (u32, u32, Vec<u8>);
 
 /// スキン画像を RGBA にする。アルファの無い画像は抜き色の画素を透明にする
-fn load_image(path: &Path, color_key: Option<[u8; 3]>) -> Result<Pixels, String> {
-    let img = image::ImageReader::open(path)
-        .and_then(|r| r.with_guessed_format())
+fn load_image(
+    fs: &dyn FileSystem,
+    path: &Path,
+    color_key: Option<[u8; 3]>,
+) -> Result<Pixels, String> {
+    let bytes = fs.read(path).map_err(|e| format!("{e:?}"))?;
+    let img = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
         .map_err(|e| format!("{}: {e}", path.display()))?
         .decode()
         .map_err(|e| format!("{}: {e}", path.display()))?;
@@ -126,8 +134,12 @@ fn load_image(path: &Path, color_key: Option<[u8; 3]>) -> Result<Pixels, String>
 }
 
 /// スキンと画像を読み込む
-fn load_skin(path: &Path, root: PathBuf) -> Result<(Skin, Vec<Option<Pixels>>), String> {
-    let loaders = skin_loaders(root);
+fn load_skin(
+    fs: &Arc<dyn FileSystem>,
+    path: &Path,
+    root: PathBuf,
+) -> Result<(Skin, Vec<Option<Pixels>>), String> {
+    let loaders = skin_loaders(fs, root);
     let loader = loaders
         .iter()
         .find(|l| l.can_load(path))
@@ -147,28 +159,12 @@ fn load_skin(path: &Path, root: PathBuf) -> Result<(Skin, Vec<Option<Pixels>>), 
         .iter()
         .map(|p| {
             let p = p.as_ref()?;
-            load_image(p, skin.color_key)
+            load_image(fs.as_ref(), p, skin.color_key)
                 .map_err(|e| eprintln!("スキン画像を読めない: {e}"))
                 .ok()
         })
         .collect();
     Ok((skin, images))
-}
-
-fn seed() -> u32 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u32)
-        .unwrap_or(0)
-}
-
-/// 記録の取り込み（まだ画面からは使わない。登録だけしておく）
-fn score_importers() -> Vec<Box<dyn ScoreImporter>> {
-    vec![
-        Box::new(score_import_lr2::Lr2ScoreDb),
-        Box::new(score_import_beatoraja::BeatorajaScoreDb::beatoraja()),
-        Box::new(score_import_beatoraja::BeatorajaScoreDb::lr2oraja()),
-    ]
 }
 
 fn parse_hs_fix(s: &str) -> Option<HsFix> {
@@ -226,17 +222,17 @@ fn sound_ms(bytes: &Arc<[u8]>) -> i64 {
 }
 
 /// 譜面の BGA 画像を読み込む（LR2 と同じく、アルファの無い画像は黒を透明にする）
-fn load_bga(chart: &Chart, chart_path: &Path) -> Vec<(ImageId, Pixels)> {
+fn load_bga(fs: &dyn FileSystem, chart: &Chart, chart_path: &Path) -> Vec<(ImageId, Pixels)> {
     let dir = chart_path.parent().unwrap_or(Path::new("."));
     chart
         .images
         .iter()
         .filter_map(|(id, name)| {
-            let Some(p) = chart_loader::find_image_file(dir, name) else {
+            let Some(p) = chart_loader::find_image_file(fs, dir, name) else {
                 eprintln!("画像が見つからない: {name}");
                 return None;
             };
-            load_image(&p, Some([0, 0, 0]))
+            load_image(fs, &p, Some([0, 0, 0]))
                 .map_err(|e| eprintln!("画像を読めない: {e}"))
                 .ok()
                 .map(|px| (*id, px))
@@ -245,18 +241,18 @@ fn load_bga(chart: &Chart, chart_path: &Path) -> Vec<(ImageId, Pixels)> {
 }
 
 /// 譜面と音を読み込む
-fn load(path: &Path) -> Result<(Chart, Sounds), String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+fn load(fs: &dyn FileSystem, path: &Path) -> Result<(Chart, Sounds), String> {
+    let bytes = fs.read(path).map_err(|e| format!("{e:?}"))?;
     let (chart, _) = application::usecase::load_chart(&chart_loaders(), path, &bytes, seed())
         .map_err(|e| format!("譜面を読めない: {e:?}"))?;
     let dir = path.parent().unwrap_or(Path::new("."));
     let mut sounds = vec![];
     for (id, name) in &chart.sounds {
-        let Some(p) = chart_loader::find_sound_file(dir, name) else {
+        let Some(p) = chart_loader::find_sound_file(fs, dir, name) else {
             eprintln!("音が見つからない: {name}");
             continue;
         };
-        match std::fs::read(&p) {
+        match fs.read(&p) {
             Ok(b) => {
                 let b: Arc<[u8]> = b.into();
                 if decodable(&b) {
@@ -265,24 +261,22 @@ fn load(path: &Path) -> Result<(Chart, Sounds), String> {
                     eprintln!("音を読めない: {}", p.display());
                 }
             }
-            Err(e) => eprintln!("{}: {e}", p.display()),
+            Err(e) => eprintln!("{e:?}"),
         }
     }
     Ok((chart, sounds))
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let args = platform::args();
+    let fs = platform::file_system();
     let mut chart_path = None;
     let mut gauge = GaugeType::Groove;
     let mut skin_path = None;
-    let mut skin_root = std::env::current_dir().unwrap_or_default();
+    let mut skin_root = platform::default_skin_root();
     let mut options = PlayOptions::default();
     let mut data_dir = PathBuf::from(DATA_DIR);
-    let usage = || -> ! {
-        eprintln!("{USAGE}");
-        std::process::exit(2);
-    };
+    let usage = || -> ! { fatal(USAGE, 2) };
     let mut it = args.iter();
     while let Some(a) = it.next() {
         let mut value = || it.next().unwrap_or_else(|| usage());
@@ -308,27 +302,16 @@ fn main() {
     let Some(chart_path) = chart_path else {
         usage();
     };
-    let _ = score_importers();
-    let scores = match SqliteScoreDb::open(&data_dir.join("score.db")) {
-        Ok(db) => Some(Mutex::new(db)),
-        Err(e) => {
-            eprintln!("記録を保存できない: {e:?}");
-            None
-        }
-    };
-    let skin = match skin_path.map(|p| load_skin(&p, skin_root)).transpose() {
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = platform::score_importers();
+    let scores = platform::open_scores(&data_dir).map(Mutex::new);
+    let skin = match skin_path.map(|p| load_skin(&fs, &p, skin_root)).transpose() {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
+        Err(e) => fatal(&e, 1),
     };
-    let (chart, sounds) = match load(&chart_path) {
+    let (chart, sounds) = match load(fs.as_ref(), &chart_path) {
         Ok(v) => v,
-        Err(e) => {
-            eprintln!("{e}");
-            std::process::exit(1);
-        }
+        Err(e) => fatal(&e, 1),
     };
     let input = KeyInput::new(
         KEYMAP
@@ -337,8 +320,7 @@ fn main() {
             .map(|(i, (_, lane))| (i as KeyId, Lane(*lane))),
     );
     let Some(mut session) = PlaySession::new(&chart, gauge, input) else {
-        eprintln!("LR2 にこのゲージは無い");
-        std::process::exit(2);
+        fatal("LR2 にこのゲージは無い", 2);
     };
     if options.auto {
         session.set_autoplay(options.judge_offset as i64);
@@ -350,7 +332,7 @@ fn main() {
                 sounds.iter().map(|(id, b)| (*id, sound_ms(b))).collect();
             // 描画側の画像 = スキンの画像、BGA の画像、単色用の白 1 画素 の順
             let mut bga_images = BTreeMap::new();
-            for (id, px) in load_bga(&chart, &chart_path) {
+            for (id, px) in load_bga(fs.as_ref(), &chart, &chart_path) {
                 bga_images.insert(id, images.len() as u32);
                 images.push(Some(px));
             }
@@ -395,8 +377,11 @@ fn main() {
             primary_window: Some(Window {
                 title,
                 resolution: WindowResolution::new(1280, 720),
-                // LR2 と同じく入力を読むループをできるだけ速く回す
+                // LR2 と同じく入力を読むループをできるだけ速く回す（ブラウザでは画面の更新に合わせて回る）
                 present_mode: PresentMode::AutoNoVsync,
+                // ブラウザ版はページの canvas に描き、大きさをページに合わせる
+                canvas: cfg!(target_arch = "wasm32").then(|| "#bevy".into()),
+                fit_canvas_to_parent: true,
                 ..default()
             }),
             ..default()
@@ -464,8 +449,8 @@ struct Game {
     scratch: [bool; 2],
     /// START・SELECT を押しているか
     control: [bool; 2],
-    /// 記録の保存先（開けなければ None。sqlite の接続は Sync でないので Mutex に入れる）
-    scores: Option<Mutex<SqliteScoreDb>>,
+    /// 記録の保存先（開けなければ・ブラウザ版は None。sqlite の接続は Sync でないので Mutex に入れる）
+    scores: Option<Mutex<Scores>>,
     /// 何を保存するか（None は保存しない）
     save_mode: Option<SaveMode>,
     /// 保存の結果（保存したら Some。保存しなかったら Some(None)）
@@ -675,7 +660,7 @@ fn play_frame(
     if game.saved.is_none() && game.session.play().is_finished() {
         let record = game.session.record();
         let saved = match game.scores.as_mut().and_then(|m| m.get_mut().ok()) {
-            Some(db) => application::usecase::save_play(db, &record, game.save_mode)
+            Some(db) => application::usecase::save_play(db.as_mut(), &record, game.save_mode)
                 .map_err(|e| eprintln!("記録を保存できない: {e:?}"))
                 .ok()
                 .flatten(),
@@ -793,7 +778,12 @@ fn draw_skin(
             let [a, red, g, b] = r.argb.map(|c| c as f32 / 255.0);
             (
                 TextFont {
-                    font: FontSource::SansSerif,
+                    // ブラウザ版は OS のフォントを探せないので Bevy の既定のフォント（Fira Mono。日本語の字は無い）
+                    font: if cfg!(target_arch = "wasm32") {
+                        TextFont::default().font
+                    } else {
+                        FontSource::SansSerif
+                    },
                     font_size: FontSize::Px(r.font.size.max(1) as f32),
                     weight: FontWeight((r.font.thickness.clamp(1, 9) * 100) as u16),
                     ..default()
@@ -916,7 +906,13 @@ fn show_result(
 /// 保存した記録の前後
 fn best_text(saved: Option<&Option<SavedScore>>) -> String {
     let Some(Some(s)) = saved else {
-        return "（記録は保存していません）".into();
+        // ブラウザ版の既定のフォントには日本語の字が無い
+        return if cfg!(target_arch = "wasm32") {
+            "(score is not saved)"
+        } else {
+            "（記録は保存していません）"
+        }
+        .into();
     };
     let line = |r: &ScoreRecord| {
         format!(

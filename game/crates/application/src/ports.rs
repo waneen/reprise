@@ -5,7 +5,7 @@ use domain::{
     score::ScoreRecord,
     skin::Skin,
 };
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 pub enum PortError {
@@ -37,6 +37,22 @@ pub trait ScoreRepository {
     fn find(&self, chart: &ChartHash, ruleset: RulesetId)
         -> Result<Option<ScoreRecord>, PortError>;
     fn save(&mut self, record: ScoreRecord) -> Result<(), PortError>;
+}
+
+/// フォルダの中身の 1 つ
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirEntry {
+    pub name: String,
+    pub path: PathBuf,
+    pub is_file: bool,
+}
+
+/// ファイルの読み出し（ネイティブはディスク、ブラウザは選ばれたファイルを置いたメモリ）
+pub trait FileSystem: Send + Sync {
+    /// フォルダの中身（フォルダでなければ空）
+    fn list(&self, dir: &Path) -> Vec<DirEntry>;
+    fn read(&self, path: &Path) -> Result<Vec<u8>, PortError>;
+    fn is_file(&self, path: &Path) -> bool;
 }
 
 pub trait Clock {

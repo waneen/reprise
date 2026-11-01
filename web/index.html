@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>reprise（ブラウザ版）</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #111; color: #ddd; font-family: system-ui, sans-serif; }
+  #setup { max-width: 640px; margin: 0 auto; padding: 24px 16px; }
+  #setup h1 { font-size: 20px; margin: 0 0 4px; }
+  #setup p { color: #999; font-size: 13px; margin: 0 0 16px; }
+  fieldset { border: 1px solid #333; border-radius: 6px; margin: 0 0 12px; padding: 10px 12px; }
+  legend { color: #aaa; font-size: 13px; }
+  label { display: block; margin: 6px 0; font-size: 14px; }
+  select, input[type=number] { width: 100%; box-sizing: border-box; background: #1b1b1b; color: #ddd; border: 1px solid #444; padding: 4px; }
+  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; }
+  button { font-size: 15px; padding: 8px 20px; background: #2d5bd7; color: #fff; border: 0; border-radius: 6px; }
+  button:disabled { background: #444; color: #888; }
+  #status { color: #aaa; font-size: 13px; min-height: 1.4em; margin-top: 8px; white-space: pre-wrap; }
+  #game { display: none; position: fixed; inset: 0; }
+  #game canvas { width: 100%; height: 100%; display: block; outline: none; }
+</style>
+</head>
+<body>
+<div id="setup">
+  <h1>reprise（ブラウザ版）</h1>
+  <p>ファイルはこのページの中だけで読み、どこにも送りません。キーは 皿 = 左 Shift / 左 Ctrl、鍵盤 = Z S X D C F V、START = Q、SELECT = W、Esc で終了。</p>
+  <fieldset>
+    <legend>譜面</legend>
+    <label>譜面のフォルダ（曲のフォルダか、それを含むフォルダ）<input id="songs" type="file" webkitdirectory multiple></label>
+    <label>譜面<select id="chart"></select></label>
+  </fieldset>
+  <fieldset>
+    <legend>LR2 スキン（任意）</legend>
+    <label>LR2 本体のフォルダ<input id="lr2" type="file" webkitdirectory multiple></label>
+    <label>プレイスキン<select id="skin"><option value="">使わない（四角形で描く）</option></select></label>
+  </fieldset>
+  <fieldset>
+    <legend>オプション</legend>
+    <div class="row">
+      <label>ゲージ<select id="gauge"><option>groove</option><option>easy</option><option>hard</option><option>death</option><option>pattack</option><option>gattack</option></select></label>
+      <label>ハイスピード（×100）<input id="hs" type="number" min="10" max="900" step="10" value="100"></label>
+      <label>HS-FIX<select id="hsfix"><option>off</option><option>max</option><option>min</option><option>avg</option><option>const</option><option>main</option></select></label>
+      <label>レーンカバー（空 = 使わない）<input id="cover" type="number" min="0" max="100"></label>
+      <label>判定タイミング（ms）<input id="offset" type="number" min="-199" max="199" value="0"></label>
+      <label><input id="auto" type="checkbox"> オートプレイ</label>
+    </div>
+  </fieldset>
+  <button id="start" disabled>はじめる</button>
+  <div id="status"></div>
+</div>
+<div id="game"><canvas id="bevy" tabindex="0"></canvas></div>
+<script type="module">
+const $ = (id) => document.getElementById(id);
+const CHART = /\.(bms|bme|bml|pms|bmson)$/i;
+const SKIN = /\.(csv|lr2skin)$/i;
+let songFiles = [], lr2Files = [];
+
+const path = (f) => "/" + f.webkitRelativePath;
+const dirOf = (p) => p.slice(0, p.lastIndexOf("/"));
+
+$("songs").onchange = () => {
+  songFiles = [...$("songs").files];
+  const charts = songFiles.filter((f) => CHART.test(f.name)).map(path).sort();
+  $("chart").replaceChildren(...charts.map((p) => new Option(p, p)));
+  $("start").disabled = charts.length === 0;
+  $("status").textContent = `譜面 ${charts.length} 件`;
+};
+$("lr2").onchange = () => {
+  lr2Files = [...$("lr2").files];
+  const skins = lr2Files.filter((f) => SKIN.test(f.name) && /\/LR2files\/Theme\//i.test(path(f))).map(path).sort();
+  $("skin").replaceChildren(new Option("使わない（四角形で描く）", ""), ...skins.map((p) => new Option(p, p)));
+};
+
+$("start").onclick = async () => {
+  $("start").disabled = true;
+  const chart = $("chart").value;
+  const skin = $("skin").value;
+  // 譜面のフォルダ（中のフォルダも）と、1 つ上のフォルダの直下のファイルを読む（LR2 は音・画像を 1 つ上でも探す）
+  const dir = dirOf(chart), parent = dirOf(dir);
+  const want = songFiles.filter((f) => { const d = dirOf(path(f)); return d === dir || d === parent || d.startsWith(dir + "/"); });
+  // スキンは LR2files/Theme と LR2files/Font の中だけ読む
+  const skinWant = skin ? lr2Files.filter((f) => /\/LR2files\/(Theme|Font)\//i.test(path(f))) : [];
+  const all = [...want, ...skinWant];
+  const files = new Map();
+  let done = 0;
+  for (const f of all) {
+    files.set(path(f), new Uint8Array(await f.arrayBuffer()));
+    if (++done % 50 === 0) $("status").textContent = `読み込み中 ${done} / ${all.length}`;
+  }
+  const args = [chart, "--gauge", $("gauge").value, "--hs", $("hs").value, "--hsfix", $("hsfix").value, "--offset", $("offset").value];
+  if ($("cover").value !== "") args.push("--cover", $("cover").value);
+  if ($("auto").checked) args.push("--auto");
+  if (skin) args.push("--skin", skin, "--skin-root", "/" + lr2Files[0].webkitRelativePath.split("/")[0]);
+  globalThis.repriseFiles = files;
+  globalThis.repriseArgs = args;
+  $("setup").style.display = "none";
+  $("game").style.display = "block";
+  $("bevy").focus();
+  try {
+    const { default: init } = await import("./pkg/reprise.js");
+    await init();
+  } catch (e) {
+    // Bevy（winit）はイベントループを例外で抜けるので、それ以外だけ伝える
+    if (!String(e).includes("Using exceptions for control flow")) {
+      $("setup").style.display = "block";
+      $("game").style.display = "none";
+      $("status").textContent = "起動できませんでした: " + e;
+    }
+  }
+};
+</script>
+</body>
+</html>

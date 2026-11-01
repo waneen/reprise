@@ -1,5 +1,6 @@
 //! 仕様ルール（lib.rs の表）とテスト関数は 1 対 1。関数名の接頭辞がルール ID。
 use super::*;
+use file_system::StdFs;
 use rc::{Block, ChartDocument, DecodeError, Diagnostic, RawEvent, ResolvePolicy, Statement};
 use rstest::rstest;
 
@@ -230,7 +231,7 @@ fn adp_ch_09_find_sound_file(
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, b"x").unwrap();
     }
-    let got = find_sound_file(&tmp.path().join("song"), name);
+    let got = find_sound_file(&StdFs, &tmp.path().join("song"), name);
     assert_eq!(got, want.map(|w| tmp.path().join(w)));
 }
 
@@ -255,6 +256,6 @@ fn adp_ch_10_find_image_file(
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, b"x").unwrap();
     }
-    let got = find_image_file(&tmp.path().join("song"), name);
+    let got = find_image_file(&StdFs, &tmp.path().join("song"), name);
     assert_eq!(got, want.map(|w| tmp.path().join(w)));
 }

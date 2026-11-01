@@ -9,9 +9,7 @@ domain.workspace = true
 application.workspace = true
 chart-loader = { path = "../adapters/chart-loader" }
 skin-loader = { path = "../adapters/skin-loader" }
-score-import-lr2 = { path = "../adapters/score-import-lr2" }
-score-import-beatoraja = { path = "../adapters/score-import-beatoraja" }
-score-db = { path = "../adapters/score-db" }
+file-system = { path = "../adapters/file-system" }
 reprise-chart-bms.workspace = true
 reprise-chart-bmson.workspace = true
 reprise-skin-lr2csv.workspace = true
@@ -23,8 +21,6 @@ bevy = { version = "0.19.1", default-features = false, features = [
     "2d_bevy_render",
     "ui_bevy_render",
     "bevy_audio",
-    # TEXT のシステムフォント（OS のフォントから探す）
-    "system_font_discovery",
     "wav",
     "vorbis",
     "mp3",
@@ -34,3 +30,17 @@ bevy = { version = "0.19.1", default-features = false, features = [
 rodio = { version = "0.22", default-features = false }
 # スキン画像の読み込み（抜き色を自前で処理するため）
 image = { version = "0.25", default-features = false, features = ["png", "bmp", "jpeg", "gif", "tga"] }
+
+# ネイティブだけ: 記録（sqlite）と OS のフォント
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+score-import-lr2 = { path = "../adapters/score-import-lr2" }
+score-import-beatoraja = { path = "../adapters/score-import-beatoraja" }
+score-db = { path = "../adapters/score-db" }
+# TEXT のシステムフォント（OS のフォントから探す）
+bevy = { version = "0.19.1", default-features = false, features = ["system_font_discovery"] }
+
+# ブラウザだけ: ページから渡されたファイルと引数を読む
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+bevy = { version = "0.19.1", default-features = false, features = ["web"] }
+wasm-bindgen = "0.2"
+js-sys = "0.3"
