@@ -88,6 +88,7 @@ fn skin(elements: Vec<Element>) -> Skin {
         elements,
         options: vec![],
         color_key: None,
+        timing: Default::default(),
     }
 }
 fn size(_: u32) -> Option<(u32, u32)> {
@@ -419,4 +420,35 @@ fn dom_skd_10_notes(
         .all(|q| q.argb[0] == 255 && q.blend == Blend::Alpha));
     let before = draw_play(&note_skin(), &st(&[(0, 0)]), &view, &size);
     assert!(before.is_empty());
+}
+
+/// DOM-SKD-11: 小節線は DST_LINE の位置から 拍数 × 480 × ハイスピード / 600 上に、判定位置を過ぎていないものだけ α 255 で描く。プレイ開始後だけ
+#[rstest]
+#[case::ahead(vec![1.0, 0.0], true, vec![[10.0, 240.0, 100.0, 1.0], [10.0, 400.0, 100.0, 1.0]])]
+#[case::passed_hidden(vec![-0.5], true, vec![])]
+#[case::above_screen(vec![3.0], true, vec![])]
+#[case::before_play(vec![1.0], false, vec![])]
+fn dom_skd_11_measure_lines(
+    #[case] lines: Vec<f64>,
+    #[case] playing: bool,
+    #[case] want: Vec<[f32; 4]>,
+) {
+    let e = el(
+        other("LINE", 0),
+        src([0, 0, 8, 1], (1, 1), 0, 0),
+        0,
+        vec![kf(0, [10.0, 400.0, 100.0, 1.0], 100, 0)],
+    );
+    let view = PlayView {
+        hi_speed: 200.0,
+        lines,
+        ..Default::default()
+    };
+    let mut timers = vec![(0, 0)];
+    if playing {
+        timers.push((41, 10));
+    }
+    let q = draw_play(&skin(vec![e]), &st(&timers), &view, &size);
+    assert_eq!(dsts(&q), want);
+    assert!(q.iter().all(|q| q.argb[0] == 255));
 }

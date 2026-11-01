@@ -4,6 +4,8 @@
 //! 使い方: `reprise <譜面ファイル> [--gauge groove|easy|hard|death|pattack|gattack] [--skin <スキン> [--skin-root <フォルダ>]]`
 //! 1P の 7 鍵（5 鍵）のプレイ画面。`--skin` で LR2 のプレイスキンで描き、無ければ四角形だけで描く。
 //! `--skin-root` はスキン中のパスの基準（LR2 なら LR2 本体のフォルダ。既定は今のフォルダ）。
+mod skin_render;
+
 use application::play::{KeyId, KeyInput, PlaySession, VisibleNote};
 use application::play_skin::PlaySkin;
 use application::ports::{AudioOutput, ChartLoader, ScoreImporter, SkinLoader};
@@ -15,22 +17,22 @@ use bevy::input::keyboard::KeyboardInput;
 use bevy::input::ButtonState;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-use bevy::sprite::Anchor;
 use bevy::window::{PresentMode, WindowResolution};
 use chart_loader::DecoderLoader;
 use domain::chart::{Chart, Lane, SoundId};
 use domain::play::{GaugeType, Judge, PlayEvent};
 use domain::random::LegacyMt;
-use domain::skin::lr2::{draw_play, pixels_per_beat, Quad};
+use domain::skin::lr2::{draw_play, pixels_per_beat};
 use domain::skin::{SceneKind, Skin};
 use skin_loader::DecoderSkinLoader;
-use std::collections::HashMap;
+use skin_render::{SkinMaterial, SkinRenderPlugin};
+use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
-/// 再生開始から 0ms（譜面の先頭）までの待ち時間
+/// 再生開始から 0ms（譜面の先頭）までの待ち時間（スキン無しのとき。スキンがあればスキンの場面の時間）
 const LEAD_IN_MS: i64 = 2000;
 /// 判定ラインから上端までに見える拍数（スキン無しのとき）
 const VISIBLE_BEATS: f64 = 4.0;
@@ -176,6 +178,24 @@ fn decodable(bytes: &Arc<[u8]>) -> bool {
 /// 読み込んだ音（ID とファイルの中身）
 type Sounds = Vec<(SoundId, Arc<[u8]>)>;
 
+/// 音の長さ（ms）。分からなければ 0
+fn sound_ms(bytes: &Arc<[u8]>) -> i64 {
+    use rodio::Source;
+    let Ok(d) = rodio::Decoder::builder()
+        .with_byte_len(bytes.len() as u64)
+        .with_data(Cursor::new(bytes.clone()))
+        .build()
+    else {
+        return 0;
+    };
+    if let Some(t) = d.total_duration() {
+        return t.as_millis() as i64;
+    }
+    let (ch, rate) = (d.channels().get() as u64, d.sample_rate().get() as u64);
+    let n = d.count() as u64;
+    (n * 1000 / (ch * rate).max(1)) as i64
+}
+
 /// 譜面と音を読み込む
 fn load(path: &Path) -> Result<(Chart, Sounds), String> {
     let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -267,7 +287,16 @@ fn main() {
     let title = format!("reprise - {} [{}]", chart.meta.title, chart.meta.artist);
     let (skin_play, pending_images) = match skin {
         Some((skin, images)) => {
-            let play = PlaySkin::new(&chart, &session, gauge, LEAD_IN_MS, &skin.options);
+            let lengths: BTreeMap<SoundId, i64> =
+                sounds.iter().map(|(id, b)| (*id, sound_ms(b))).collect();
+            let play = PlaySkin::new(
+                &chart,
+                &session,
+                gauge,
+                skin.timing,
+                &skin.options,
+                &lengths,
+            );
             let sizes = images
                 .iter()
                 .map(|i| i.as_ref().map(|(w, h, _)| (*w, *h)))
@@ -277,6 +306,7 @@ fn main() {
                     skin,
                     play,
                     handles: vec![],
+                    materials: HashMap::new(),
                     sizes,
                     rng: LegacyMt::new(seed()),
                 }),
@@ -285,6 +315,9 @@ fn main() {
         }
         None => (None, vec![]),
     };
+    let lead_in_ms = skin_play
+        .as_ref()
+        .map_or(LEAD_IN_MS, |sp| sp.play.lead_in_ms());
 
     App::new()
         .add_plugins(DefaultPlugins.set(WindowPlugin {
@@ -297,8 +330,12 @@ fn main() {
             }),
             ..default()
         }))
+        .add_plugins(SkinRenderPlugin)
         .insert_resource(Game {
             session,
+            lead_in_ms,
+            scratch: [false; 2],
+            over: false,
             start: None,
             last_judge: None,
             sounds: HashMap::new(),
@@ -312,7 +349,8 @@ fn main() {
             (
                 play_frame,
                 (draw_notes, draw_hud).run_if(|g: Res<Game>| g.skin.is_none()),
-                draw_skin.run_if(|g: Res<Game>| g.skin.is_some()),
+                draw_skin.run_if(|g: Res<Game>| g.skin.is_some() && !g.over),
+                show_result.run_if(|g: Res<Game>| g.over),
             )
                 .chain(),
         )
@@ -323,8 +361,10 @@ fn main() {
 struct SkinPlay {
     skin: Skin,
     play: PlaySkin,
-    /// スキン画像（読めなかったものは None）
-    handles: Vec<Option<Handle<Image>>>,
+    /// スキン画像（読めなかったものは None）。フィルタ無し・有りの 2 つ
+    handles: Vec<Option<[Handle<Image>; 2]>>,
+    /// （画像, 合成モード, フィルタ）ごとのマテリアル
+    materials: HashMap<(u32, u8, bool), Handle<SkinMaterial>>,
     sizes: Vec<Option<(u32, u32)>>,
     /// ゲージのちらつき用（LR2 の `GetRand`）
     rng: LegacyMt,
@@ -333,6 +373,12 @@ struct SkinPlay {
 #[derive(Resource)]
 struct Game {
     session: PlaySession,
+    /// 画面の開始から譜面の先頭までの時間
+    lead_in_ms: i64,
+    /// 皿の 2 つのキー（KEYMAP の 0, 1 番）を押しているか
+    scratch: [bool; 2],
+    /// 場面が終わった（結果を出す）
+    over: bool,
     /// 最初のフレームで決める（起動にかかった時間で先頭を取りこぼさないように）
     start: Option<Instant>,
     /// 最後の判定と、そのフレーム時刻
@@ -343,7 +389,7 @@ struct Game {
 
 impl Game {
     fn now_ms(&self) -> i64 {
-        self.start.map_or(0, |s| s.elapsed().as_millis() as i64) - LEAD_IN_MS
+        self.start.map_or(0, |s| s.elapsed().as_millis() as i64) - self.lead_in_ms
     }
 }
 
@@ -400,19 +446,22 @@ fn setup(
             .drain(..)
             .map(|p| {
                 let (w, h, data) = p?;
-                let mut img = Image::new(
-                    Extent3d {
-                        width: w,
-                        height: h,
-                        depth_or_array_layers: 1,
-                    },
-                    TextureDimension::D2,
-                    data,
-                    TextureFormat::Rgba8UnormSrgb,
-                    RenderAssetUsages::default(),
-                );
-                img.sampler = ImageSampler::nearest();
-                Some(images.add(img))
+                let mut img = |sampler| {
+                    let mut image = Image::new(
+                        Extent3d {
+                            width: w,
+                            height: h,
+                            depth_or_array_layers: 1,
+                        },
+                        TextureDimension::D2,
+                        data.clone(),
+                        TextureFormat::Rgba8UnormSrgb,
+                        RenderAssetUsages::default(),
+                    );
+                    image.sampler = sampler;
+                    images.add(image)
+                };
+                Some([img(ImageSampler::nearest()), img(ImageSampler::linear())])
             })
             .collect();
         return;
@@ -476,7 +525,11 @@ fn play_frame(
             exit.write(AppExit::Success);
         }
         if let Some(i) = KEYMAP.iter().position(|(code, _)| *code == k.key_code) {
-            events.push((i as KeyId, k.state == ButtonState::Pressed));
+            let down = k.state == ButtonState::Pressed;
+            events.push((i as KeyId, down));
+            if i < 2 {
+                game.scratch[i] = down;
+            }
         }
     }
     if game.start.is_none() {
@@ -490,7 +543,13 @@ fn play_frame(
     };
     let out = game.session.frame(t, &events, &mut audio);
     if let Some(sp) = game.skin.as_mut() {
+        // 皿の向き: 1 つ目のキーは上、2 つ目は下（両方なら止める）
+        sp.play
+            .set_scratch(game.scratch[1] as i32 - game.scratch[0] as i32);
         sp.play.update(t, &game.session, &out);
+        if sp.play.scene_over() {
+            game.over = true;
+        }
     }
     for e in out {
         if let PlayEvent::Judge { judge, .. } = e {
@@ -499,49 +558,16 @@ fn play_frame(
     }
 }
 
-/// 回転の中心（テンキー配置）→ 四角形の中での位置（左上 0、右下 1）
-fn pivot(center: u8) -> (f32, f32) {
-    match center {
-        1 => (0.0, 1.0),
-        2 => (0.5, 1.0),
-        3 => (1.0, 1.0),
-        4 => (0.0, 0.5),
-        6 => (1.0, 0.5),
-        7 => (0.0, 0.0),
-        8 => (0.5, 0.0),
-        9 => (1.0, 0.0),
-        _ => (0.5, 0.5),
-    }
-}
-
-/// スキンの四角形を Bevy のスプライトにする（スキン座標は左上原点・y 下向き、画面は中央原点・y 上向き）
-fn quad_sprite(
-    q: &Quad,
-    image: Handle<Image>,
-    res: (u32, u32),
-    z: f32,
-) -> (Sprite, Anchor, Transform) {
-    let [x, y, w, h] = q.dst;
-    let [sx, sy, sw, sh] = q.src;
-    let (fx, fy) = pivot(q.center);
-    let [a, r, g, b] = q.argb.map(|c| c as f32 / 255.0);
-    let sprite = Sprite {
-        image,
-        rect: Some(Rect::new(sx, sy, sx + sw, sy + sh)),
-        custom_size: Some(Vec2::new(w, h)),
-        color: Color::srgba(r, g, b, a),
-        ..default()
-    };
-    let px = x + fx * w - res.0 as f32 / 2.0;
-    let py = res.1 as f32 / 2.0 - (y + fy * h);
-    let transform =
-        Transform::from_xyz(px, py, z).with_rotation(Quat::from_rotation_z(-q.angle.to_radians()));
-    (sprite, Anchor(Vec2::new(fx - 0.5, 0.5 - fy)), transform)
-}
-
-/// LR2 スキンで描く（毎フレーム作り直す）
-fn draw_skin(mut commands: Commands, mut game: ResMut<Game>, old: Query<Entity, With<SkinSprite>>) {
-    for e in &old {
+/// LR2 スキンで描く（毎フレーム作り直す）。同じ画像・合成モード・フィルタが続く四角形を 1 つのメッシュにする
+fn draw_skin(
+    mut commands: Commands,
+    mut game: ResMut<Game>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<SkinMaterial>>,
+    old: Query<(Entity, &Mesh2d), With<SkinSprite>>,
+) {
+    for (e, m) in &old {
+        meshes.remove(&m.0);
         commands.entity(e).despawn();
     }
     let game = &mut *game;
@@ -557,17 +583,84 @@ fn draw_skin(mut commands: Commands, mut game: ResMut<Game>, old: Query<Entity, 
         view.notes.clear();
     }
     let sizes = &sp.sizes;
-    let quads = draw_play(&sp.skin, &sp.play, &view, &|i| {
-        sizes.get(i as usize).copied().flatten()
-    });
-    for (i, q) in quads.iter().enumerate() {
-        let Some(Some(h)) = sp.handles.get(q.image as usize) else {
+    let size = |i: u32| sizes.get(i as usize).copied().flatten();
+    let quads = draw_play(&sp.skin, &sp.play, &view, &size);
+    let loaded = |i: u32| {
+        sp.handles
+            .get(i as usize)
+            .is_some_and(|h| h.is_some())
+            .then(|| size(i))
+            .flatten()
+    };
+    for (i, b) in skin_render::batches(&quads, sp.skin.resolution, &loaded)
+        .into_iter()
+        .enumerate()
+    {
+        let Some(Some(h)) = sp.handles.get(b.image as usize) else {
             continue;
         };
-        let (sprite, anchor, transform) =
-            quad_sprite(q, h.clone(), sp.skin.resolution, i as f32 * 0.001);
-        commands.spawn((sprite, anchor, transform, SkinSprite));
+        let texture = h[b.filter as usize].clone();
+        let material = sp
+            .materials
+            .entry((b.image, b.blend as u8, b.filter))
+            .or_insert_with(|| {
+                materials.add(SkinMaterial {
+                    texture,
+                    blend: b.blend,
+                })
+            })
+            .clone();
+        commands.spawn((
+            Mesh2d(meshes.add(b.mesh)),
+            MeshMaterial2d(material),
+            Transform::from_xyz(0.0, 0.0, i as f32 * 0.001),
+            SkinSprite,
+        ));
     }
+}
+
+#[derive(Component)]
+struct ResultText;
+
+/// 場面が終わったら結果を出す（結果画面ができるまでの仮）
+fn show_result(
+    mut commands: Commands,
+    game: Res<Game>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    old: Query<(Entity, &Mesh2d), With<SkinSprite>>,
+    shown: Query<(), With<ResultText>>,
+) {
+    if !shown.is_empty() {
+        return;
+    }
+    for (e, m) in &old {
+        meshes.remove(&m.0);
+        commands.entity(e).despawn();
+    }
+    let play = game.session.play();
+    let c = play.counts();
+    commands.spawn((
+        Text::new(format!(
+            "RESULT: {:?}\nEX SCORE {}\nPG {}  GR {}  GD {}  BD {}  PR {}\nMAX COMBO {} / {}\n\nPress Esc to quit",
+            game.session.record().lamp,
+            c.ex_score(),
+            c.pgreat,
+            c.great,
+            c.good,
+            c.bad,
+            c.poor,
+            play.max_combo(),
+            play.total_notes(),
+        )),
+        TextFont::from_font_size(28.0),
+        Node {
+            position_type: PositionType::Absolute,
+            top: px(40),
+            left: px(40),
+            ..default()
+        },
+        ResultText,
+    ));
 }
 
 fn draw_notes(mut commands: Commands, game: Res<Game>, old: Query<Entity, With<NoteSprite>>) {

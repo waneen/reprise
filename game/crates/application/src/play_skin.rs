@@ -2,9 +2,10 @@
 //! LR2 の番号のタイマー・条件・数値を作り、`domain::skin::lr2::SkinState` として渡す。
 //! 番号の意味は OpenLR2 の `LR2_skinobject.cpp`・`Scene04_Play.cpp`・`LR2_gameloop.cpp` を仕様として参照した。
 use crate::play::PlaySession;
-use domain::chart::{Chart, KeyMode, Lane, NoteKind, TimingEvent};
+use domain::chart::{Chart, KeyMode, NoteKind, SoundId, TimingEvent};
 use domain::play::{GaugeType, Judge, KeyState, PlayEvent};
 use domain::skin::lr2::{NoteView, PlayView, SkinState};
+use domain::skin::SceneTiming;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// NOWJUDGE の添字（5=PG … 1=POOR, 0=空POOR）
@@ -19,10 +20,59 @@ pub fn judge_index(j: Judge) -> usize {
     }
 }
 
+/// 値を時間をかけて追いかける表示（LR2 の `HP_print`・`score_print`）
+#[derive(Debug, Clone, Copy)]
+struct Follow {
+    from: f64,
+    to: f64,
+    t_from: i64,
+    t_to: i64,
+}
+
+impl Follow {
+    fn new(v: f64) -> Self {
+        Self {
+            from: v,
+            to: v,
+            t_from: 0,
+            t_to: 0,
+        }
+    }
+    /// 時刻 `now` の表示値（LR2 `ChangeValueByTime` の線形）
+    fn at(&self, now: i64) -> f64 {
+        if self.from == self.to {
+            return self.to;
+        }
+        if self.t_from <= now && now <= self.t_to && self.t_from < self.t_to {
+            let r = (now - self.t_from) as f64 / (self.t_to - self.t_from) as f64;
+            return (1.0 - r) * self.from + r * self.to;
+        }
+        if self.t_from < now {
+            self.to
+        } else {
+            self.from
+        }
+    }
+    /// 目標が変わったら、今の表示値から `dur` ms かけて追いかけ直す
+    fn retarget(&mut self, v: f64, now: i64, dur: i64) {
+        if v != self.to {
+            self.from = self.at(now);
+            self.to = v;
+            self.t_from = now;
+            self.t_to = now + dur;
+        }
+    }
+}
+
 /// プレイ画面のスキン用の状態。時刻はすべて譜面の時刻（ms、譜面の先頭 = 0）
 pub struct PlaySkin {
-    /// 画面が始まってから譜面の先頭までの時間
+    /// 画面が始まってから譜面の先頭（タイマー 41）までの時間
     lead_in_ms: i64,
+    timing: SceneTiming,
+    /// 皿を回している向き（−1 / 0 / 1）
+    scratch: i32,
+    hp_print: Follow,
+    score_print: Follow,
     now: i64,
     /// 動いているタイマーと、動き始めた時刻
     starts: BTreeMap<i32, i64>,
@@ -32,7 +82,7 @@ pub struct PlaySkin {
     key_mode: KeyMode,
     /// 小節の始まりの拍
     measures: Vec<f64>,
-    /// 最後のオブジェクトの時刻（曲の長さ）
+    /// 曲の長さ（オブジェクトの時刻 + 音の長さ の最大）
     runtime_ms: i64,
     judge: Option<usize>,
     last_miss: Option<i64>,
@@ -49,14 +99,16 @@ pub struct PlaySkin {
 
 impl PlaySkin {
     /// `skin_options` はスキンの読み込みで真になった条件（スキン設定の選択など）
+    /// `timing` はスキンの場面の時間、`sound_ms` は音の長さ（曲の長さに使う）
     pub fn new(
         chart: &Chart,
         session: &PlaySession,
         gauge: GaugeType,
-        lead_in_ms: i64,
+        timing: SceneTiming,
         skin_options: &[i32],
+        sound_ms: &BTreeMap<SoundId, i64>,
     ) -> Self {
-        let timing = session.timing();
+        let lead_in_ms = (timing.load_start + timing.load_end + timing.play_start).max(0) as i64;
         let survival = !matches!(gauge, GaugeType::Groove | GaugeType::Easy);
         let has_ln = chart
             .notes
@@ -78,17 +130,26 @@ impl PlaySkin {
             KeyMode::K10 => Some(163),
             KeyMode::K9 => Some(164),
         });
-        // 曲の長さ = 最後のノーツ（LN は終端）か BGM の時刻
-        let last_beat = chart
+        // 曲の長さ = 各オブジェクト（ノーツ・LN 終端・BGM）の時刻 + その音の長さ の最大
+        let tm = session.timing();
+        let ends = chart
             .notes
             .iter()
-            .map(|n| match n.kind {
-                NoteKind::Long { end, .. } => end.0,
-                _ => n.beat.0,
+            .flat_map(|n| {
+                let end = match n.kind {
+                    NoteKind::Long { end, end_sound } => Some((end, end_sound)),
+                    _ => None,
+                };
+                std::iter::once((n.beat, n.sound)).chain(end)
             })
-            .chain(chart.bgm.iter().map(|b| b.0 .0))
-            .fold(0.0, f64::max);
-        let runtime_ms = timing.time_of(domain::chart::Beat(last_beat)) / 1000;
+            .chain(chart.bgm.iter().map(|(b, s)| (*b, Some(*s))));
+        let mut last_beat: f64 = 0.0;
+        let mut runtime_ms: i64 = 0;
+        for (b, snd) in ends {
+            last_beat = last_beat.max(b.0);
+            let len = snd.and_then(|s| sound_ms.get(&s).copied()).unwrap_or(0);
+            runtime_ms = runtime_ms.max(tm.time_of(b) / 1000 + len);
+        }
         // 小節の始まり（小節の長さ × 4 拍）
         let lengths: BTreeMap<u32, f64> = chart
             .timing
@@ -106,8 +167,13 @@ impl PlaySkin {
             measures.push(b);
             i += 1;
         }
+        let hp = session.play().gauge();
         let mut s = Self {
             lead_in_ms,
+            timing,
+            scratch: 0,
+            hp_print: Follow::new(hp),
+            score_print: Follow::new(0.0),
             now: -lead_in_ms,
             starts: BTreeMap::new(),
             fixed,
@@ -125,12 +191,29 @@ impl PlaySkin {
             combo: 0,
             processed: 0,
         };
-        // 画面の開始・入力開始・準備完了
-        for t in [0, 1, 40] {
-            s.starts.insert(t, -lead_in_ms);
-        }
+        // 画面の開始
+        s.starts.insert(0, -lead_in_ms);
         s.update(-lead_in_ms, session, &[]);
         s
+    }
+
+    /// 画面の開始から譜面の先頭までの時間
+    pub fn lead_in_ms(&self) -> i64 {
+        self.lead_in_ms
+    }
+
+    /// 皿を回している向き（−1 = 上、0 = なし、1 = 下）。次の `update` から角度に効く
+    pub fn set_scratch(&mut self, dir: i32) {
+        self.scratch = dir.signum();
+    }
+
+    /// 場面を閉じてよいか（APP-SKN-08）: 曲の終わり（タイマー 2）から `#FADEOUT`、途中終了（タイマー 3）から `#CLOSE` を過ぎた
+    pub fn scene_over(&self) -> bool {
+        let over = |timer: i32, limit: i32| {
+            self.timer(timer)
+                .is_some_and(|t| limit == 0 || t > limit as i64)
+        };
+        over(3, self.timing.close) || over(2, self.timing.fade_out)
     }
 
     fn set(&mut self, timer: i32) {
@@ -148,7 +231,15 @@ impl PlaySkin {
         let dt = (t_ms - self.now).max(0);
         self.now = t_ms;
         let play = session.play();
-        // プレイ開始 = 譜面の先頭
+        // 場面の時間（APP-SKN-01）: 入力開始・準備完了・プレイ開始 = 譜面の先頭
+        let scene = t_ms + self.lead_in_ms;
+        if scene > self.timing.start_input as i64 {
+            self.set_once(1);
+        }
+        let ready = (self.timing.load_start + self.timing.load_end) as i64 - self.lead_in_ms;
+        if t_ms >= ready {
+            self.starts.entry(40).or_insert(ready);
+        }
         if t_ms >= 0 {
             self.starts.entry(41).or_insert(0);
         }
@@ -218,6 +309,9 @@ impl PlaySkin {
         if play.is_dead() {
             self.set_once(3);
             self.reset(44);
+        } else if t_ms > self.runtime_ms {
+            // 曲の終わり（APP-SKN-08）
+            self.set_once(2);
         }
         let total = play.total_notes();
         if total > 0 && play.combo() == total {
@@ -226,13 +320,9 @@ impl PlaySkin {
         if play.is_finished() && !play.is_dead() {
             self.set_once(143);
         }
-        // 皿の角度: 皿を押している間は −720°/s、プレイ開始後は 360°/s
-        let held_scratch = matches!(
-            session.keys().get(&Lane(0)),
-            Some(KeyState::Pressed | KeyState::Held)
-        );
-        let rate = if held_scratch {
-            -720.0
+        // 皿の角度（APP-SKN-09）: 回している間はその向きに 720°/s、それ以外はプレイ開始後 360°/s
+        let rate = if self.scratch != 0 {
+            720.0 * self.scratch as f32
         } else if t_ms >= 0 {
             360.0
         } else {
@@ -245,8 +335,14 @@ impl PlaySkin {
         let total = total as i64;
         let processed = self.processed;
         let mut n = BTreeMap::new();
+        // 表示の追従（APP-SKN-07）: HP は差 × 10ms、スコアは 500ms で追いかける
+        let shown = self.hp_print.at(t_ms);
+        self.hp_print
+            .retarget(hp, t_ms, ((shown - hp) as i64).abs() * 10);
         if total > 0 {
             let score = (c.good as i64 + c.great as i64 * 2 + c.pgreat as i64 * 4) * 50000 / total;
+            self.score_print.retarget(score as f64, t_ms, 500);
+            let score = self.score_print.at(t_ms) as i64;
             n.insert(
                 100,
                 if matches!(self.key_mode, KeyMode::K7 | KeyMode::K14) {
@@ -266,7 +362,7 @@ impl PlaySkin {
         n.insert(104, play.combo() as i64);
         n.insert(105, play.max_combo() as i64);
         n.insert(106, total);
-        n.insert(107, even);
+        n.insert(107, (self.hp_print.at(t_ms) as i64) / 2 * 2);
         n.insert(110, c.pgreat as i64);
         n.insert(111, c.great as i64);
         n.insert(112, c.good as i64);
@@ -315,20 +411,22 @@ impl PlaySkin {
                 held: v.held,
             })
             .collect();
+        let lines = self
+            .measures
+            .iter()
+            .map(|m| m - self.beat)
+            .filter(|b| (0.0..=visible_beats).contains(b))
+            .collect();
         PlayView {
+            lines,
             judge: self.judge,
             combo: self.combo,
-            gauge: (self.hp as i32) / 2,
+            gauge: (self.hp_print.at(self.now) as i32) / 2,
             survival: self.survival,
             tremble,
             hi_speed,
             notes,
         }
-    }
-
-    /// 画面の開始からの時間
-    pub fn scene_ms(&self) -> i64 {
-        self.now + self.lead_in_ms
     }
 }
 
