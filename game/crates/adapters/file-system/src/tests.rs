@@ -27,6 +27,26 @@ fn fs_std_01_disk(#[case] rel: &str, #[case] want: Vec<(String, bool)>) {
     ));
 }
 
+/// FS-STD-02: 更新日時
+#[rstest]
+#[case::file("a.txt", true)]
+#[case::dir("sub", true)]
+#[case::missing("none", false)]
+fn fs_std_02_modified(#[case] rel: &str, #[case] exists: bool) {
+    let t = tempfile::tempdir().unwrap();
+    std::fs::write(t.path().join("a.txt"), b"x").unwrap();
+    std::fs::create_dir(t.path().join("sub")).unwrap();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    let got = StdFs.modified(&t.path().join(rel));
+    assert_eq!(got.is_some(), exists);
+    if let Some(m) = got {
+        assert!((now - m).abs() < 60, "{m} {now}");
+    }
+}
+
 /// FS-MEM-01: パスの正規化と読み出し
 #[rstest]
 #[case::same("/song/a.bms", true)]
@@ -61,4 +81,18 @@ fn fs_mem_02_list(#[case] dir: &str, #[case] want: Vec<(String, bool)>) {
     let got = fs.list(Path::new(dir));
     assert_eq!(names(&got), want);
     assert!(got.iter().all(|e| e.path == Path::new(dir).join(&e.name)));
+}
+
+/// FS-MEM-03: 更新日時
+#[rstest]
+#[case::file("/a/x.wav", Some(0))]
+#[case::implied_dir("/a/b", Some(0))]
+#[case::prefix_is_not_dir("/a/b/z", None)]
+#[case::missing("/c", None)]
+fn fs_mem_03_modified(#[case] path: &str, #[case] want: Option<i64>) {
+    let mut fs = MemFs::new();
+    for p in ["/a/x.wav", "/a/b/z.ogg"] {
+        fs.insert(p, b"x".to_vec());
+    }
+    assert_eq!(fs.modified(Path::new(path)), want);
 }

@@ -1,8 +1,11 @@
-//! ネイティブとブラウザで違うところ（起動引数・ファイル・記録と設定の保存先・乱数の種）。
+//! ネイティブとブラウザで違うところ（起動引数・ファイル・曲一覧・記録と設定の保存先・乱数の種）。
+//! 曲一覧はネイティブ版は `--data` のフォルダの `song.db`（LR2 の song.db と同じテーブル）から読み、フォルダを見張って作り直す。
+//! ブラウザ版は起動のたびに渡されたファイルから作る。
 //! ブラウザ版は、ページの JavaScript が選ばれたファイルを `globalThis.repriseFiles`（パス → `Uint8Array` の `Map`）に、
 //! 起動引数（`--songs` と `--skin-root`）を `globalThis.repriseArgs`（文字列の配列）に置いてから起動する（`web/index.html`）。
 //! 設定はネイティブと同じ `config.json` の中身を、ブラウザ版はページの保存領域（`localStorage`）に置く。
-use application::ports::{FileSystem, ScoreRepository, SettingsStore};
+use application::ports::{ChartLoader, FileSystem, LibrarySource, ScoreRepository, SettingsStore};
+use domain::select::Library;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -24,6 +27,27 @@ mod imp {
     }
     pub fn default_skin_root() -> PathBuf {
         std::env::current_dir().unwrap_or_default()
+    }
+    /// 曲一覧: `song.db` の今の中身と、確かめ・見張りの届け先（DB を開けなければその場で読んだ一覧だけ）
+    pub fn library(
+        data_dir: &Path,
+        roots: &[PathBuf],
+        fs: Arc<dyn FileSystem>,
+        loaders: fn() -> Vec<Box<dyn ChartLoader>>,
+    ) -> (Library, Option<Box<dyn LibrarySource>>) {
+        match library_watch::LocalLibrary::start(
+            data_dir.join("song.db"),
+            roots.to_vec(),
+            fs.clone(),
+            loaders,
+        ) {
+            Ok((lib, source)) => (lib, Some(Box::new(source))),
+            Err(e) => {
+                eprintln!("曲の DB を開けないので、フォルダを読んだ一覧だけで出す: {e:?}");
+                let lib = application::usecase::scan_library(fs.as_ref(), &loaders(), roots);
+                (lib, None)
+            }
+        }
     }
     pub fn open_scores(data_dir: &Path) -> Option<Scores> {
         match score_db::SqliteScoreDb::open(&data_dir.join("score.db")) {
@@ -93,6 +117,16 @@ mod imp {
     }
     pub fn default_skin_root() -> PathBuf {
         PathBuf::from("/")
+    }
+    /// 曲一覧: 渡されたファイルから作る（DB も見張りも無い）
+    pub fn library(
+        _data_dir: &Path,
+        roots: &[PathBuf],
+        fs: Arc<dyn FileSystem>,
+        loaders: fn() -> Vec<Box<dyn ChartLoader>>,
+    ) -> (Library, Option<Box<dyn LibrarySource>>) {
+        let lib = application::usecase::scan_library(fs.as_ref(), &loaders(), roots);
+        (lib, None)
     }
     /// ブラウザ版は記録を保存しない
     pub fn open_scores(_data_dir: &Path) -> Option<Scores> {

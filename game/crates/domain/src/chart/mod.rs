@@ -132,6 +132,10 @@ pub struct ChartMeta {
     pub total_percent: Option<f64>,
     /// 譜面名（bmson `chart_name`）
     pub chart_name: String,
+    /// `#STAGEFILE`・`#BANNER`・`#BACKBMP`（無ければ空。曲の DB に書くだけで、描かない）
+    pub stage_file: String,
+    pub banner: String,
+    pub back_bmp: String,
 }
 
 /// 確定した譜面（プレイ・計算はすべてこれを対象にする）

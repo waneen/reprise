@@ -4,7 +4,8 @@
 //! 鍵盤 6 でオートプレイ、鍵盤 2・← で戻る。最初の一覧で Esc なら終了。曲を選んでいるときの SELECT・→ は難易度の絞り込みを替え、
 //! START を押している間はパネル 1 が開いて鍵盤 1 で鍵盤数の絞り込みを替える（LR2 と同じ）。皿・鍵盤は LR2 と同じく 1P・2P のどちらでもよい。
 //! スキンで描くときは LR2 と同じく、一覧が動くアニメーション・マウスのホイール・マウスでのバーの選択・BUTTON のクリックも受ける
-//! （BUTTON 10..12 で絞り込み・並べ替え、13 でキー設定画面へ）。選んでいる曲のプレビュー音は `preview`
+//! （BUTTON 10..12 で絞り込み・並べ替え、13 でキー設定画面へ）。選んでいる曲のプレビュー音は `preview`。
+//! 曲一覧が届いたら（ネイティブ版のフォルダの見張り）、開いていたフォルダとカーソルを保って一覧を作り直す（`refresh`）
 use crate::input::SlotInput;
 use crate::keyconfig_scene::KeyConfigScreen;
 use crate::preview::{self, PreviewPlayer, PreviewSound};
@@ -25,6 +26,10 @@ use domain::select::{
 };
 use domain::skin::lr2::{bar_slot_dst, button_clicks, draw_select, mouse_on, BarView, SelectView};
 use domain::skin::Skin;
+
+/// 新しい曲一覧の届け先（ネイティブ版は曲の DB とフォルダの見張り。無ければ一覧は替わらない）
+#[derive(Resource)]
+pub struct LibraryFeed(pub Option<Box<dyn application::ports::LibrarySource>>);
 
 /// 一覧に出す行数（カーソルの上下にこの半分ずつ）
 const ROWS: usize = 15;
@@ -161,6 +166,43 @@ pub fn enter(
         SelectText,
         DespawnOnExit(Scene::Select),
     ));
+}
+
+/// 新しい曲一覧が届いていれば、開いていたフォルダとカーソルを保って作り直す（DOM-SEL-22。reprise の拡張）
+pub fn refresh(feed: Res<LibraryFeed>, db: Res<ScoreDb>, mut sel: ResMut<Selection>) {
+    let Some(library) = feed.0.as_ref().and_then(|f| f.poll()) else {
+        return;
+    };
+    let sel = &mut *sel;
+    let before = current_path(sel);
+    let old = std::mem::replace(&mut sel.library, library);
+    let rec = sort_record(&db);
+    sel.state.reload(&old, &sel.library, &mut sel.filter, &rec);
+    sel.dirty = true;
+    let changed = current_path(sel) != before;
+    let Some(sk) = sel.skin.as_mut() else {
+        return;
+    };
+    let Some(sc) = sk.scene.as_mut() else {
+        return;
+    };
+    let now = sc.start.elapsed().as_millis() as i64;
+    sc.bars = list_bars(&sel.library, &sel.state, &db);
+    sc.views = sc.bars.iter().map(SelectBar::view).collect();
+    sc.scroll.jump(sel.state.cursor(), sc.bars.len(), now);
+    if changed {
+        sc.state.reset_bar_timer();
+    }
+    sc.state.select(sc.bars.get(sel.state.cursor()));
+    sc.state.set_list(sc.scroll.position(), sc.bars.len());
+}
+
+/// 選んでいるバーのパス
+fn current_path(sel: &Selection) -> Option<std::path::PathBuf> {
+    match sel.state.current()? {
+        Bar::Folder { path, .. } => Some(path.clone()),
+        Bar::Song(i) => Some(sel.library.songs()[*i].path.clone()),
+    }
 }
 
 /// 1P か 2P の操作かキーボードのキーの状態（LR2 の選曲は 1P と 2P の操作のどちらも受ける）

@@ -1,0 +1,16 @@
+[package]
+name = "song-db"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+domain.workspace = true
+application.workspace = true
+rusqlite.workspace = true
+# LR2 はフォルダのパスの CRC32 を Shift_JIS のバイト列で取る
+encoding_rs = "0.8"
+
+[dev-dependencies]
+rstest.workspace = true
+tempfile.workspace = true
