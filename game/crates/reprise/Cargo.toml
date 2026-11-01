@@ -10,6 +10,8 @@ application.workspace = true
 chart-loader = { path = "../adapters/chart-loader" }
 skin-loader = { path = "../adapters/skin-loader" }
 file-system = { path = "../adapters/file-system" }
+# 設定（config.json の中身。ネイティブはファイル、ブラウザ版はページの保存領域に置く）
+settings-json = { path = "../adapters/settings-json" }
 reprise-chart-bms.workspace = true
 reprise-chart-bmson.workspace = true
 reprise-skin-lr2csv.workspace = true
@@ -36,7 +38,6 @@ image = { version = "0.25", default-features = false, features = ["png", "bmp", 
 score-import-lr2 = { path = "../adapters/score-import-lr2" }
 score-import-beatoraja = { path = "../adapters/score-import-beatoraja" }
 score-db = { path = "../adapters/score-db" }
-settings-json = { path = "../adapters/settings-json" }
 # TEXT のシステムフォント（OS のフォントから探す）
 bevy = { version = "0.19.1", default-features = false, features = ["system_font_discovery"] }
 

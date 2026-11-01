@@ -7,6 +7,7 @@
 //! キー設定画面に入る（`config.json` の `keyconfig_skin` のキー設定スキンで描く。無ければ入らない）。
 //! 遊び終えると `config.json` の `result_skin` のリザルトスキンでリザルト画面を出す（無ければ結果を文字で出す）。
 //! `--skin-root` はスキン中のパスの基準（LR2 なら LR2 本体のフォルダ。既定は今のフォルダ）。
+//! `config.json` に無いスキンは LR2 本体の `LR2files/Config/config.xml` で選んでいるもの。
 //! 記録は `--data` のフォルダ（既定は今のフォルダの `reprise-data`）の `score.db` に、設定は `config.json` に保存する
 //! （起動引数で渡した設定も保存するので、次からは引数無しで選曲から始められる）。
 mod input;
@@ -360,12 +361,29 @@ fn option_names(fs: &dyn FileSystem, root: &Path) -> OptionNames {
     }
 }
 
-/// `config.json` の `skin_custom` のうち、スキン `path` の選択
-fn custom_of(s: &Settings, path: &Option<PathBuf>) -> SkinCustom {
-    path.as_ref()
-        .and_then(|p| s.skin_custom.get(p))
-        .cloned()
+/// LR2 本体の `LR2files/Config/config.xml` で選んでいるスキン（名前 → LR2 本体のフォルダからのパス。無ければ空）
+fn lr2_skins(fs: &dyn FileSystem, root: &Path) -> BTreeMap<String, String> {
+    let path = root.join("LR2files").join("Config").join("config.xml");
+    fs.read(&path)
+        .map(|b| reprise_skin_lr2csv::lr2config::skin_paths(&b))
         .unwrap_or_default()
+}
+
+/// 使うスキンとそのスキン設定の選択（`config.json` の `skin_custom`）。`own` は `config.json` のスキン、
+/// 無ければ LR2 本体の `config.xml` の `key` のスキン（LR2 本体のフォルダからのパス。スキンのパスはスキン中のパスと同じく
+/// `--skin-root` から探す）
+fn pick_skin(
+    s: &Settings,
+    own: &Option<PathBuf>,
+    lr2: &BTreeMap<String, String>,
+    key: &str,
+) -> Option<(PathBuf, SkinCustom)> {
+    let path = match own {
+        Some(p) => p.clone(),
+        None => PathBuf::from(lr2.get(key)?),
+    };
+    let custom = s.skin_custom.get(&path).cloned().unwrap_or_default();
+    Some((path, custom))
 }
 
 fn main() {
@@ -445,55 +463,62 @@ fn main() {
         eprintln!("譜面 {} 件", lib.songs().len());
         lib
     };
+    let skin_root = s
+        .skin_root
+        .clone()
+        .unwrap_or_else(platform::default_skin_root);
+    // config.json に無いスキンは LR2 本体の設定で選んでいるもの（LR2 と同じ）
+    let lr2 = lr2_skins(fs.as_ref(), &skin_root);
+    let play_skin = pick_skin(s, &s.skin, &lr2, "play_7");
     let boot = Boot {
         fs,
         gauge: s.gauge,
         options,
-        skin_path: s.skin.clone(),
-        skin_custom: custom_of(s, &s.skin),
-        skin_root: s
-            .skin_root
-            .clone()
-            .unwrap_or_else(platform::default_skin_root),
+        skin_path: play_skin.as_ref().map(|(p, _)| p.clone()),
+        skin_custom: play_skin.map(|(_, c)| c).unwrap_or_default(),
+        skin_root,
         direct,
     };
     let input_map = input::InputMap::new(s.bindings.clone());
     let s_select = s.select;
     let option_names = option_names(boot.fs.as_ref(), &boot.skin_root);
     // 選曲スキン（読めなければ文字の一覧）
-    let select_skin = match (&s.select_skin, direct) {
-        (Some(p), false) => load_skin(
+    let select_skin = match (pick_skin(s, &s.select_skin, &lr2, "select"), direct) {
+        (Some((p, custom)), false) => load_skin(
             &boot.fs,
-            p,
+            &p,
             boot.skin_root.clone(),
             &[SceneKind::Select],
-            &custom_of(s, &s.select_skin),
+            &custom,
         )
         .map_err(|e| eprintln!("選曲スキンを読めないので文字の一覧で出す: {e}"))
         .ok(),
         _ => None,
     };
     // キー設定スキン（選曲スキンの BUTTON 13 から入る。無い・読めなければ BUTTON 13 は何もしない）
-    let keyconfig_skin = match (&s.keyconfig_skin, &select_skin) {
-        (Some(p), Some(_)) => load_skin(
+    let keyconfig_skin = match (
+        pick_skin(s, &s.keyconfig_skin, &lr2, "keyconfig"),
+        &select_skin,
+    ) {
+        (Some((p, custom)), Some(_)) => load_skin(
             &boot.fs,
-            p,
+            &p,
             boot.skin_root.clone(),
             &[SceneKind::KeyConfig],
-            &custom_of(s, &s.keyconfig_skin),
+            &custom,
         )
         .map_err(|e| eprintln!("キー設定スキンを読めない: {e}"))
         .ok(),
         _ => None,
     };
     // リザルトスキン（無い・読めなければ結果を文字で出す）
-    let result_skin = s.result_skin.as_ref().and_then(|p| {
+    let result_skin = pick_skin(s, &s.result_skin, &lr2, "result").and_then(|(p, custom)| {
         load_skin(
             &boot.fs,
-            p,
+            &p,
             boot.skin_root.clone(),
             &[SceneKind::Result],
-            &custom_of(s, &s.result_skin),
+            &custom,
         )
         .map_err(|e| eprintln!("リザルトスキンを読めないので結果を文字で出す: {e}"))
         .ok()
