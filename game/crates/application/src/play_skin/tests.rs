@@ -1,8 +1,10 @@
 //! APP-SKN-* のテスト（ルール表は lib.rs）
 use super::*;
 use crate::play::{KeyId, KeyInput};
+use crate::play_options::{ControlInput, PlayOptions};
 use crate::ports::AudioOutput;
 use domain::chart::{Beat, ChartHash, ChartMeta, ImageId, Lane, Note, SoundId};
+use domain::play::HsFix;
 use rstest::rstest;
 
 struct Mute;
@@ -76,10 +78,32 @@ fn run_with(
     sound_ms: &BTreeMap<SoundId, i64>,
     frames: &[(i64, &[(KeyId, bool)])],
 ) -> (PlaySession, PlaySkin) {
+    run_opts(gauge, measure0, sound_ms, PlayOptions::default(), frames)
+}
+
+fn run_opts(
+    gauge: GaugeType,
+    measure0: Option<f64>,
+    sound_ms: &BTreeMap<SoundId, i64>,
+    options: PlayOptions,
+    frames: &[(i64, &[(KeyId, bool)])],
+) -> (PlaySession, PlaySkin) {
     let c = chart(measure0);
     let input = KeyInput::new([(0, Lane(0)), (1, Lane(1)), (2, Lane(2))]);
     let mut s = PlaySession::new(&c, gauge, input).unwrap();
-    let mut k = PlaySkin::new(&c, &s, gauge, TIMING, &[901], sound_ms, &BTreeMap::new());
+    if options.auto {
+        s.set_autoplay(options.judge_offset as i64);
+    }
+    let mut k = PlaySkin::new(
+        &c,
+        &s,
+        gauge,
+        TIMING,
+        &[901],
+        sound_ms,
+        &BTreeMap::new(),
+        options,
+    );
     for (t, ev) in frames {
         let out = s.frame(*t, ev, &mut Mute);
         k.update(*t, &s, &out);
@@ -112,7 +136,7 @@ const NONE: &[(KeyId, bool)] = &[];
 
 /// APP-SKN-01: タイマー 0 は画面の開始、1 は `#STARTINPUT` を過ぎてから、40 は `#LOADSTART`+`#LOADEND`、
 /// 41 は譜面の先頭（さらに `#PLAYSTART` 後）から。変わらない条件:
-/// 32（オートでない）・41（BGA あり）・42/43（GROOVE 系/HARD 系）・81（読み込み済み）・160..164（鍵盤数）・170/171・172/173（LN）・スキン設定
+/// 41（BGA あり）・42/43（GROOVE 系/HARD 系）・81（読み込み済み）・160..164（鍵盤数）・170/171・172/173（LN）・スキン設定
 #[rstest]
 #[case::before_play(GaugeType::Groove, &[(-1500, NONE)], vec![Timer(0, Some(500)), Timer(1, Some(0)), Timer(40, None), Timer(41, None), Op(32, true), Op(33, false), Op(40, false), Op(41, true), Op(42, true), Op(43, false), Op(81, true), Op(160, true), Op(161, false), Op(170, true), Op(173, true), Op(172, false), Op(901, true), Op(900, false)])]
 #[case::before_input(GaugeType::Groove, &[(-1800, NONE)], vec![Timer(0, Some(200)), Timer(1, None)])]
@@ -204,7 +228,7 @@ fn app_skn_06_view(
     assert_eq!(k.slider(6), progress);
     assert_eq!(k.bar(2), 0.0);
     let (s0, k0) = run(GaugeType::Groove, None, &[(0, NONE)]);
-    let v = k0.view(&s0, 200.0, 4.0, 1);
+    let v = k0.view(&s0, 320.0, 1);
     let notes: Vec<(i32, f64, Option<f64>)> =
         v.notes.iter().map(|n| (n.lane, n.head, n.tail)).collect();
     assert_eq!(
@@ -214,7 +238,7 @@ fn app_skn_06_view(
     assert_eq!(v.lines, vec![0.0, 4.0]);
     assert_eq!(
         (v.gauge, v.survival, v.tremble, v.hi_speed),
-        (10, false, 1, 200.0)
+        (10, false, 1, 100.0)
     );
     let _ = s;
 }
@@ -278,6 +302,7 @@ fn app_skn_09_turntable(#[case] dir: i32, #[case] t: i64, #[case] angle: f32) {
         &[],
         &BTreeMap::new(),
         &BTreeMap::new(),
+        PlayOptions::default(),
     );
     k.update(t.min(0), &s, &[]);
     k.set_scratch(dir);
@@ -305,6 +330,7 @@ fn app_skn_10_texts(#[case] subtitle: &str, #[case] want: Vec<(i32, Option<&str>
         &[],
         &BTreeMap::new(),
         &BTreeMap::new(),
+        PlayOptions::default(),
     );
     for (id, w) in want {
         assert_eq!(k.text(id), w, "text {id}");
@@ -352,17 +378,98 @@ fn app_skn_11_bga(
         &[],
         &BTreeMap::new(),
         &images,
+        PlayOptions::default(),
     );
     for (t, ev) in frames {
         let out = s.frame(*t, ev, &mut Mute);
         k.update(*t, &s, &out);
     }
     let got: Vec<(u32, bool)> = k
-        .view(&s, 200.0, 4.0, 0)
+        .view(&s, 320.0, 0)
         .bga
         .iter()
         .map(|b| (b.image, b.backbox))
         .collect();
     assert_eq!(got, want);
     assert!(k.option(41) && !k.option(40));
+}
+
+fn options(hi_speed: i32, hs_fix: HsFix, judge_offset: i32) -> PlayOptions {
+    PlayOptions {
+        hi_speed,
+        hs_fix,
+        judge_offset,
+        ..Default::default()
+    }
+}
+
+/// APP-OPT-03: 表示のハイスピード = 設定 × HS-FIX の倍率。ノーツは (位置 − 今の位置) / 480 で、今 = 時刻 + 判定タイミング。
+/// `visible_px` ピクセルまでのノーツだけ（BPM 60。レーン 1 に 1, 2 拍）
+#[rstest]
+#[case::default(options(100, HsFix::Off, 0), 320.0, 100.0, vec![1.0, 2.0])]
+#[case::hi_speed(options(200, HsFix::Off, 0), 240.0, 200.0, vec![1.0])]
+#[case::hs_fix_max(options(100, HsFix::MaxBpm, 0), 1000.0, 250.0, vec![1.0, 2.0])]
+#[case::offset(options(100, HsFix::Off, 100), 320.0, 100.0, vec![0.9, 1.9])]
+#[case::constant(options(100, HsFix::Constant, 0), 320.0, 100.0, vec![2.5])]
+#[case::visible_range(options(100, HsFix::Off, 0), 80.0, 100.0, vec![1.0])]
+fn app_opt_03_view(
+    #[case] o: PlayOptions,
+    #[case] visible_px: f64,
+    #[case] hi_speed: f64,
+    #[case] heads: Vec<f64>,
+) {
+    let (s, k) = run_opts(GaugeType::Groove, None, &BTreeMap::new(), o, &[(0, NONE)]);
+    let v = k.view(&s, visible_px, 0);
+    assert_eq!(v.hi_speed, hi_speed);
+    let got: Vec<f64> = v
+        .notes
+        .iter()
+        .filter(|n| n.lane == 1)
+        .map(|n| n.head)
+        .collect();
+    assert_eq!(got, heads);
+}
+
+/// APP-OPT-04: 数値 10 ハイスピード・12 判定タイミング・14 レーンカバー、SLIDER 2 ハイスピード（10..=990）・4 レーンカバー
+/// （効いているときだけ）、条件 32/33 オートでない/オート・270 START/SELECT を押しながらでレーンカバーが効いている
+#[rstest]
+#[case::values(false, true, ControlInput::default(), vec![Num(10, Some(150)), Num(12, Some(-5)), Num(14, Some(30)), Op(32, true), Op(33, false), Op(270, false)], 0.3)]
+#[case::holding(false, true, ControlInput { start_held: true, ..Default::default() }, vec![Op(270, true)], 0.3)]
+#[case::cover_unused(false, false, ControlInput { start_held: true, ..Default::default() }, vec![Num(14, Some(30)), Op(270, false)], 0.0)]
+#[case::auto(true, true, ControlInput::default(), vec![Op(32, false), Op(33, true)], 0.3)]
+fn app_opt_04_skin_values(
+    #[case] auto: bool,
+    #[case] lane_cover: bool,
+    #[case] control: ControlInput,
+    #[case] probes: Vec<P>,
+    #[case] cover_slider: f64,
+) {
+    let o = PlayOptions {
+        hi_speed: 150,
+        lane_cover,
+        cover: 30,
+        auto,
+        judge_offset: -5,
+        ..Default::default()
+    };
+    let (_, mut k) = run_opts(GaugeType::Groove, None, &BTreeMap::new(), o, &[(0, NONE)]);
+    k.control(&control);
+    check(&k, &probes);
+    assert_eq!(k.slider(2), 140.0 / 980.0);
+    assert_eq!(k.slider(4), cover_slider);
+}
+
+/// APP-SKN-12: オートは判定（空POOR 以外）で鍵盤を押し、LN の間は押し続け、判定から 80ms で離す
+#[rstest]
+#[case::pressed_at_judge(&[(1000, NONE)], vec![Timer(101, Some(0)), Timer(121, None), Timer(51, Some(0))])]
+#[case::released_after_80ms(&[(1000, NONE), (1079, NONE), (1080, NONE)], vec![Timer(101, None), Timer(121, Some(0))])]
+#[case::held_during_ln(&[(3000, NONE), (3500, NONE)], vec![Timer(102, Some(500)), Timer(72, Some(500)), Timer(52, None)])]
+#[case::released_after_ln(&[(3000, NONE), (5000, NONE), (5080, NONE)], vec![Timer(102, None), Timer(122, Some(0)), Timer(72, None)])]
+fn app_skn_12_auto_keys(#[case] frames: &[(i64, &[(KeyId, bool)])], #[case] probes: Vec<P>) {
+    let o = PlayOptions {
+        auto: true,
+        ..Default::default()
+    };
+    let (_, k) = run_opts(GaugeType::Groove, None, &BTreeMap::new(), o, frames);
+    check(&k, &probes);
 }

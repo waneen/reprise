@@ -84,6 +84,8 @@ pub struct PlaySession {
     hash: ChartHash,
     /// 直前のフレームの各レーンの状態
     keys: BTreeMap<Lane, KeyState>,
+    /// オートプレイの判定タイミング（ms。オートでなければ None）
+    auto: Option<i64>,
 }
 
 impl PlaySession {
@@ -97,7 +99,17 @@ impl PlaySession {
             input,
             hash: chart.hash,
             keys: BTreeMap::new(),
+            auto: None,
         })
+    }
+
+    /// オートプレイにする（APP-PLY-05）。`judge_offset_ms` は判定タイミング（ノーツはフレーム時刻 + これで片付ける）
+    pub fn set_autoplay(&mut self, judge_offset_ms: i64) {
+        self.auto = Some(judge_offset_ms);
+    }
+
+    pub fn is_autoplay(&self) -> bool {
+        self.auto.is_some()
     }
 
     pub fn play(&self) -> &Lr2Play {
@@ -124,10 +136,17 @@ impl PlaySession {
         key_events: &[(KeyId, bool)],
         audio: &mut dyn AudioOutput,
     ) -> Vec<PlayEvent> {
-        let keys = self.input.frame(key_events);
-        let events = self
-            .play
-            .tick(t_ms, |l| keys.get(&l).copied().unwrap_or_default());
+        let mut keys = self.input.frame(key_events);
+        let events = match self.auto {
+            // オートは鍵盤を使わない（APP-PLY-05）
+            Some(offset) => {
+                keys.values_mut().for_each(|k| *k = KeyState::Off);
+                self.play.tick_auto(t_ms, t_ms + offset)
+            }
+            None => self
+                .play
+                .tick(t_ms, |l| keys.get(&l).copied().unwrap_or_default()),
+        };
         self.keys = keys;
         for e in &events {
             match e {
@@ -292,5 +311,30 @@ mod tests {
             .map(|v| (v.y, v.y_end, v.held))
             .collect();
         assert_eq!(got, want);
+    }
+
+    /// APP-PLY-05: オートプレイは鍵盤を使わず、フレーム時刻 + 判定タイミング までのノーツを PG にする。音はフレーム時刻で渡す
+    #[rstest]
+    #[case::on_time(0, &[(999, vec![]), (1000, vec![])], vec![(5, 1_000_000)], 1)]
+    #[case::offset_earlier(10, &[(990, vec![])], vec![(5, 990_000)], 1)]
+    #[case::keys_ignored(0, &[(500, vec![(1, true)])], vec![], 0)]
+    fn app_ply_05_autoplay(
+        #[case] offset: i64,
+        #[case] frames: &[(i64, Vec<(KeyId, bool)>)],
+        #[case] want: Vec<(u32, i64)>,
+        #[case] pgreat: u32,
+    ) {
+        let c = chart(vec![note(1.0, NoteKind::Normal, 5)], vec![]);
+        let mut s = PlaySession::new(&c, GaugeType::Groove, input()).unwrap();
+        s.set_autoplay(offset);
+        let mut audio = Rec::default();
+        for (t, ev) in frames {
+            s.frame(*t, ev, &mut audio);
+        }
+        assert_eq!(audio.0, want);
+        assert_eq!(s.play().counts().pgreat, pgreat);
+        assert_eq!(s.play().counts().poor, 0);
+        assert!(s.keys().values().all(|k| *k == KeyState::Off));
+        assert!(s.is_autoplay());
     }
 }
