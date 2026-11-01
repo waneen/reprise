@@ -15,10 +15,13 @@
 //! | ADP-SK-10 | 場面の時間: `STARTINPUT`（beatoraja は `INPUT`）・`LOADSTART`・`LOADEND`・`PLAYSTART`・`FADEOUT`・`CLOSE`（`SKIP` も）の第 1 引数と、`STARTINPUT` の第 2・第 3 引数（リザルトのランク・記録更新。OpenLR2 `startinput_rank`・`startinput_update`）。後の行が勝ち、無ければ 0 |
 //! | ADP-SK-11 | フォント: `#FONT` はシステムフォント（それ以外の種類は None）。画像フォントの画像は `images` の後ろに足し、文字はその添字を指す。画像が無い文字は捨て、読めなかったフォントは None |
 //! | ADP-SK-12 | 曲バーの配置: `#BAR_CENTER,n` は 0..=29 のときだけ（OpenLR2 の範囲の確かめ）、`#BAR_AVAILABLE,a,b` はそのまま。後の行が勝ち、無ければ 0 |
+//! | ADP-SK-13 | LR2 の `#FLIPSIDE` があれば読み込みの最後に 1P と 2P を入れ替える（DOM-SKD-23。`#INCLUDE` 先のものは LR2 のデコーダが残さない） |
+//! | ADP-SK-14 | スキン設定の選択（`config.json` の項目名 → 選んだ名前）を、ヘッダの項目の添字ごとの選択にする（CUSTOMOPTION はラベルの位置 i で条件 開始番号 + i、ファイルはその名前、beatoraja の選択肢は項目の条件）。名前の無い項目・無い選択肢は選ばない（既定のまま） |
 use application::ports::{FileSystem, PortError, SkinLoader};
 use domain::{random::LegacyMt, skin as d};
 use reprise_skin_core as sc;
 use reprise_skin_core::{FileResolver, SkinDecoder, SkinSettings};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -301,7 +304,7 @@ pub fn map_skin(doc: sc::SkinDocument, default_color_key: Option<[u8; 3]>) -> d:
             })
         })
         .collect();
-    d::Skin {
+    let mut skin = d::Skin {
         bars,
         timing,
         color_key,
@@ -345,7 +348,43 @@ pub fn map_skin(doc: sc::SkinDocument, default_color_key: Option<[u8; 3]>) -> d:
                     .collect(),
             })
             .collect(),
+    };
+    // ADP-SK-13: `#FLIPSIDE`（`#INCLUDE` 先のものは LR2 のデコーダが残さない。SKN-DIR-02）
+    if doc.directives.iter().any(|d| d.command == "FLIPSIDE") {
+        d::flip::flip_side(&mut skin);
     }
+    skin
+}
+
+/// ADP-SK-14: スキン設定の選択（項目名 → 選んだ名前）を、ヘッダの項目の添字ごとの選択にする
+pub fn custom_choices(
+    customs: &[sc::Custom],
+    chosen: &BTreeMap<String, String>,
+) -> BTreeMap<usize, sc::CustomChoice> {
+    let mut out = BTreeMap::new();
+    for (i, c) in customs.iter().enumerate() {
+        let choice = match c {
+            sc::Custom::Option {
+                name,
+                start_op,
+                labels,
+            } => chosen
+                .get(name)
+                .and_then(|v| labels.iter().position(|l| l == v))
+                .map(|k| sc::CustomChoice::Option(start_op + k as i32)),
+            sc::Custom::Choice { name, items, .. } => chosen
+                .get(name)
+                .and_then(|v| items.iter().find(|(l, _)| l == v))
+                .map(|(_, op)| sc::CustomChoice::Option(*op)),
+            sc::Custom::File { name, .. } => {
+                chosen.get(name).map(|v| sc::CustomChoice::File(v.clone()))
+            }
+        };
+        if let Some(c) = choice {
+            out.insert(i, c);
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -357,6 +396,8 @@ pub struct DecoderSkinLoader<D: SkinDecoder> {
     /// ファイルの読み出し先
     pub fs: Arc<dyn FileSystem>,
     pub settings: SkinSettings,
+    /// スキン設定の選択（項目名 → 選んだ名前。ADP-SK-14）
+    pub custom: BTreeMap<String, String>,
     /// スキン中のパスの基準（LR2 なら LR2 本体のフォルダ）
     pub root: PathBuf,
     /// `#TRANSCOLOR` が無いときの抜き色
@@ -373,9 +414,17 @@ impl<D: SkinDecoder> SkinLoader for DecoderSkinLoader<D> {
             root: self.root.clone(),
             rng,
         };
+        let mut settings = self.settings.clone();
+        if !self.custom.is_empty() {
+            let header = self
+                .decoder
+                .read_header(p, &mut files)
+                .map_err(|e| PortError::Parse(format!("{e:?}")))?;
+            settings.custom = custom_choices(&header.customs, &self.custom);
+        }
         let doc = self
             .decoder
-            .decode(p, &self.settings, &mut files)
+            .decode(p, &settings, &mut files)
             .map_err(|e| PortError::Parse(format!("{e:?}")))?;
         Ok(map_skin(doc, self.default_color_key))
     }

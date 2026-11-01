@@ -44,6 +44,10 @@ fn sjs_01_missing(#[case] rel: &str) {
     s.bindings.set(Side::P1, 0, 1, Some(Source::Axis { axis: "LeftStickX".into(), plus: true }));
     s.bindings.set(Side::P1, 2, 3, Some(Source::Button("Other(3)".into())));
     s.bindings.set(Side::P2, 9, 0, Some(Source::Key("Enter".into())));
+    s.skin_custom.insert(
+        "LR2files/Theme/x/play.csv".into(),
+        [("Side".to_string(), "2P".to_string())].into_iter().collect(),
+    );
     s
 })]
 fn sjs_02_round_trip(#[case] s: Settings) {
@@ -139,6 +143,38 @@ fn sjs_08_result_skin(#[case] text: &str, #[case] want: Option<PathBuf>) {
         to_json(&s)["result_skin"],
         v.get("result_skin").cloned().unwrap_or(Value::Null)
     );
+}
+
+/// SJS-09: スキン設定の選択
+#[rstest]
+#[case::one(r#"{"skin_custom": {"a/play.csv": {"Side": "2P", "BG": "b"}}}"#, vec![("a/play.csv", vec![("BG", "b"), ("Side", "2P")])])]
+#[case::two_skins(r#"{"skin_custom": {"a.csv": {"X": "1"}, "b.csv": {}}}"#, vec![("a.csv", vec![("X", "1")]), ("b.csv", vec![])])]
+#[case::missing("{}", vec![])]
+fn sjs_09_skin_custom(#[case] text: &str, #[case] want: Vec<(&str, Vec<(&str, &str)>)>) {
+    let v: Value = serde_json::from_str(text).unwrap();
+    let s = from_json(&v).unwrap();
+    let got: Vec<(String, Vec<(String, String)>)> = s
+        .skin_custom
+        .iter()
+        .map(|(p, m)| {
+            (
+                p.display().to_string(),
+                m.iter().map(|(a, b)| (a.clone(), b.clone())).collect(),
+            )
+        })
+        .collect();
+    let want: Vec<(String, Vec<(String, String)>)> = want
+        .into_iter()
+        .map(|(p, m)| {
+            (
+                p.to_string(),
+                m.into_iter().map(|(a, b)| (a.into(), b.into())).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(got, want);
+    assert_eq!(from_json(&to_json(&s)).unwrap().skin_custom, s.skin_custom);
+    assert!(from_json(&serde_json::json!({"skin_custom": {"a": {"X": 1}}})).is_err());
 }
 
 fn k(name: &str) -> Option<Source> {

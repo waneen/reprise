@@ -2,7 +2,7 @@
 //! 記法を増やす = chart-formats/ か skin-formats/ に crate を足して、ここで 1 行登録するだけ。
 //!
 //! 使い方: `reprise --songs <フォルダ> [オプション]` で選曲から、`reprise <譜面ファイル> [オプション]` でその譜面のプレイから（オプションは [`USAGE`]）。
-//! 1P の 7 鍵（5 鍵）のプレイ画面。`--skin` で LR2 のプレイスキンで描き、無ければ四角形だけで描く。
+//! 7 鍵（5 鍵）のシングルプレイの画面（1P と 2P の割り当てのどちらでも遊べる）。`--skin` で LR2 のプレイスキンで描き、無ければ四角形だけで描く。
 //! 選曲画面は `--select-skin` で LR2 の選曲スキンで描き、無ければ文字の一覧で描く。選曲スキンの BUTTON 13 で
 //! キー設定画面に入る（`config.json` の `keyconfig_skin` のキー設定スキンで描く。無ければ入らない）。
 //! 遊び終えると `config.json` の `result_skin` のリザルトスキンでリザルト画面を出す（無ければ結果を文字で出す）。
@@ -80,13 +80,21 @@ fn chart_loaders() -> Vec<Box<dyn ChartLoader>> {
     ]
 }
 
-/// スキンの読み込み（描けるのは LR2 のプレイスキン・選曲スキン・キー設定スキン・リザルトスキン）
-fn skin_loaders(fs: &Arc<dyn FileSystem>, root: PathBuf) -> Vec<Box<dyn SkinLoader>> {
+/// スキン設定の選択（項目名 → 選んだ名前）
+pub type SkinCustom = BTreeMap<String, String>;
+
+/// スキンの読み込み（描けるのは LR2 のプレイスキン・選曲スキン・キー設定スキン・リザルトスキン）。`custom` はスキン設定の選択
+fn skin_loaders(
+    fs: &Arc<dyn FileSystem>,
+    root: PathBuf,
+    custom: &SkinCustom,
+) -> Vec<Box<dyn SkinLoader>> {
     vec![
         Box::new(DecoderSkinLoader {
             decoder: reprise_skin_lr2csv::Lr2CsvDecoder::default(),
             fs: fs.clone(),
             settings: Default::default(),
+            custom: custom.clone(),
             root: root.clone(),
             // LR2 の既定の抜き色
             default_color_key: Some([0, 255, 0]),
@@ -95,6 +103,7 @@ fn skin_loaders(fs: &Arc<dyn FileSystem>, root: PathBuf) -> Vec<Box<dyn SkinLoad
             decoder: reprise_skin_beatoraja::BeatorajaJsonDecoder,
             fs: fs.clone(),
             settings: Default::default(),
+            custom: custom.clone(),
             root,
             default_color_key: None,
         }),
@@ -125,14 +134,15 @@ fn load_image(
     Ok((rgba.width(), rgba.height(), rgba.into_raw()))
 }
 
-/// スキンと画像を読み込む。`scenes` は描ける場面の種類
+/// スキンと画像を読み込む。`scenes` は描ける場面の種類、`custom` は `config.json` の `skin_custom` のこのスキンの選択
 pub fn load_skin(
     fs: &Arc<dyn FileSystem>,
     path: &Path,
     root: PathBuf,
     scenes: &[SceneKind],
+    custom: &SkinCustom,
 ) -> Result<(Skin, Vec<Option<Pixels>>), String> {
-    let loaders = skin_loaders(fs, root);
+    let loaders = skin_loaders(fs, root, custom);
     let loader = loaders
         .iter()
         .find(|l| l.can_load(path))
@@ -290,6 +300,8 @@ pub struct Boot {
     gauge: GaugeType,
     options: PlayOptions,
     skin_path: Option<PathBuf>,
+    /// プレイスキンのスキン設定の選択（プレイのたびに読み直すので持っておく）
+    skin_custom: SkinCustom,
     skin_root: PathBuf,
     /// 譜面を直接渡して起動した（終わったら選曲に戻らずに終了する）
     pub direct: bool,
@@ -329,6 +341,14 @@ pub fn list_font() -> FontSource {
     } else {
         FontSource::SansSerif
     }
+}
+
+/// `config.json` の `skin_custom` のうち、スキン `path` の選択
+fn custom_of(s: &Settings, path: &Option<PathBuf>) -> SkinCustom {
+    path.as_ref()
+        .and_then(|p| s.skin_custom.get(p))
+        .cloned()
+        .unwrap_or_default()
 }
 
 fn main() {
@@ -413,6 +433,7 @@ fn main() {
         gauge: s.gauge,
         options,
         skin_path: s.skin.clone(),
+        skin_custom: custom_of(s, &s.skin),
         skin_root: s
             .skin_root
             .clone()
@@ -422,25 +443,41 @@ fn main() {
     let input_map = input::InputMap::new(s.bindings.clone());
     // 選曲スキン（読めなければ文字の一覧）
     let select_skin = match (&s.select_skin, direct) {
-        (Some(p), false) => load_skin(&boot.fs, p, boot.skin_root.clone(), &[SceneKind::Select])
-            .map_err(|e| eprintln!("選曲スキンを読めないので文字の一覧で出す: {e}"))
-            .ok(),
+        (Some(p), false) => load_skin(
+            &boot.fs,
+            p,
+            boot.skin_root.clone(),
+            &[SceneKind::Select],
+            &custom_of(s, &s.select_skin),
+        )
+        .map_err(|e| eprintln!("選曲スキンを読めないので文字の一覧で出す: {e}"))
+        .ok(),
         _ => None,
     };
     // キー設定スキン（選曲スキンの BUTTON 13 から入る。無い・読めなければ BUTTON 13 は何もしない）
     let keyconfig_skin = match (&s.keyconfig_skin, &select_skin) {
-        (Some(p), Some(_)) => {
-            load_skin(&boot.fs, p, boot.skin_root.clone(), &[SceneKind::KeyConfig])
-                .map_err(|e| eprintln!("キー設定スキンを読めない: {e}"))
-                .ok()
-        }
+        (Some(p), Some(_)) => load_skin(
+            &boot.fs,
+            p,
+            boot.skin_root.clone(),
+            &[SceneKind::KeyConfig],
+            &custom_of(s, &s.keyconfig_skin),
+        )
+        .map_err(|e| eprintln!("キー設定スキンを読めない: {e}"))
+        .ok(),
         _ => None,
     };
     // リザルトスキン（無い・読めなければ結果を文字で出す）
     let result_skin = s.result_skin.as_ref().and_then(|p| {
-        load_skin(&boot.fs, p, boot.skin_root.clone(), &[SceneKind::Result])
-            .map_err(|e| eprintln!("リザルトスキンを読めないので結果を文字で出す: {e}"))
-            .ok()
+        load_skin(
+            &boot.fs,
+            p,
+            boot.skin_root.clone(),
+            &[SceneKind::Result],
+            &custom_of(s, &s.result_skin),
+        )
+        .map_err(|e| eprintln!("リザルトスキンを読めないので結果を文字で出す: {e}"))
+        .ok()
     });
 
     let mut app = App::new();
@@ -599,6 +636,7 @@ fn prepare_play(boot: &Boot, req: &PlayRequest) -> Result<Prepared, String> {
                 p,
                 boot.skin_root.clone(),
                 &[SceneKind::Play7, SceneKind::Play5],
+                &boot.skin_custom,
             )
         })
         .transpose()?;
@@ -846,7 +884,8 @@ fn play_frame(
         select_held: game.control[1],
         ..Default::default()
     };
-    for &(slot, down) in &input.events {
+    // SP のプレイは 1P と 2P の割り当てをまとめて 1P の操作として読む（LR2 `InputToButton` の player 1。DOM-INP-05）
+    for &(slot, down) in &input.single.events {
         if slot == START || slot == SELECT {
             let i = slot - START;
             game.control[i] = down;

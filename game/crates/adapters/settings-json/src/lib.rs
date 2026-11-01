@@ -11,6 +11,7 @@
 //! | SJS-06 | キー設定スキンは `keyconfig_skin`（パス。null・無しは None） |
 //! | SJS-07 | 操作の割り当ては `keys` に操作の名前（2P は `p2_` を付ける）ごとの配列で、配列の位置が割り当ての位置（LR2 の 16 か所。空いた位置は null。16 番目より後は無視） |
 //! | SJS-08 | リザルトスキンは `result_skin`（パス。null・無しは None） |
+//! | SJS-09 | スキン設定の選択は `skin_custom` に スキンのパス → { 項目名: 選んだ名前（文字列）}（無しは空） |
 use application::ports::{PortError, SettingsStore};
 use application::settings::Settings;
 use domain::input::{Side, Source, PLACES, SLOTS};
@@ -132,6 +133,7 @@ pub fn to_json(s: &Settings) -> Value {
         "judge_offset": o.judge_offset,
         "analog_scratch_ms": s.bindings.analog_scratch_ms,
         "keys": keys,
+        "skin_custom": s.skin_custom,
     })
 }
 
@@ -165,6 +167,18 @@ pub fn from_json(v: &Value) -> Result<Settings, PortError> {
             "analog_scratch_ms" if !v.is_null() => {
                 s.bindings.analog_scratch_ms =
                     Some(v.as_u64().ok_or_else(|| err("analog_scratch_ms"))? as u32)
+            }
+            "skin_custom" => {
+                let skins = v.as_object().ok_or_else(|| err("skin_custom"))?;
+                for (skin, items) in skins {
+                    let items = items.as_object().ok_or_else(|| err("skin_custom"))?;
+                    let mut chosen = std::collections::BTreeMap::new();
+                    for (name, choice) in items {
+                        let c = choice.as_str().ok_or_else(|| err("skin_custom"))?;
+                        chosen.insert(name.clone(), c.to_string());
+                    }
+                    s.skin_custom.insert(PathBuf::from(skin), chosen);
+                }
             }
             "keys" => {
                 let keys = v.as_object().ok_or_else(|| err("keys"))?;

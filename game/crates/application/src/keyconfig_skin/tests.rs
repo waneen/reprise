@@ -76,16 +76,20 @@ fn app_kcf_02_state(
     }
 }
 
-/// APP-KCF-03: 鍵盤のタイマー（タイマー 1 の後。皿は 2 方向で 1 つ、両方離したら離した）
+/// APP-KCF-03: 鍵盤のタイマー（タイマー 1 の後。皿は 2 方向で 1 つ、両方離したら離した。2P は 110+n・130+n）
 #[rstest]
-#[case::key_press(vec![(key_slot(3), true)], vec![(103, Some(0)), (123, None)])]
-#[case::key_release(vec![(key_slot(3), true), (key_slot(3), false)], vec![(103, None), (123, Some(0))])]
-#[case::scratch(vec![(SCRATCH_UP, true)], vec![(100, Some(0)), (120, None)])]
-#[case::scratch_other_held(vec![(SCRATCH_UP, true), (SCRATCH_DOWN, true), (SCRATCH_UP, false)], vec![(100, Some(0)), (120, None)])]
-#[case::scratch_both_released(vec![(SCRATCH_UP, true), (SCRATCH_DOWN, true), (SCRATCH_UP, false), (SCRATCH_DOWN, false)], vec![(100, None), (120, Some(0))])]
-#[case::start_has_no_timer(vec![(START, true)], vec![(109, None), (110, None)])]
+#[case::key_press(vec![(key_slot(3), true)], false, vec![(103, Some(0)), (123, None)])]
+#[case::key_release(vec![(key_slot(3), true), (key_slot(3), false)], false, vec![(103, None), (123, Some(0))])]
+#[case::scratch(vec![(SCRATCH_UP, true)], false, vec![(100, Some(0)), (120, None)])]
+#[case::scratch_other_held(vec![(SCRATCH_UP, true), (SCRATCH_DOWN, true), (SCRATCH_UP, false)], false, vec![(100, Some(0)), (120, None)])]
+#[case::scratch_both_released(vec![(SCRATCH_UP, true), (SCRATCH_DOWN, true), (SCRATCH_UP, false), (SCRATCH_DOWN, false)], false, vec![(100, None), (120, Some(0))])]
+#[case::p2_key(vec![(key_slot(3), true)], true, vec![(113, Some(0)), (133, None), (103, None)])]
+#[case::p2_release(vec![(key_slot(3), true), (key_slot(3), false)], true, vec![(113, None), (133, Some(0))])]
+#[case::p2_scratch(vec![(SCRATCH_DOWN, true)], true, vec![(110, Some(0)), (130, None), (100, None)])]
+#[case::start_has_no_timer(vec![(START, true)], false, vec![(109, None), (110, None)])]
 fn app_kcf_03_key_timers(
     #[case] events: Vec<(usize, bool)>,
+    #[case] p2: bool,
     #[case] want: Vec<(i32, Option<i64>)>,
 ) {
     let mut b = Bindings::default();
@@ -94,18 +98,32 @@ fn app_kcf_03_key_timers(
     s.frame(
         5,
         &mut b,
-        KeyConfigInput {
-            slots: &events,
-            ..Default::default()
+        if p2 {
+            KeyConfigInput {
+                slots_p2: &events,
+                ..Default::default()
+            }
+        } else {
+            KeyConfigInput {
+                slots: &events,
+                ..Default::default()
+            }
         },
     );
     assert!((100..130).all(|i| s.timer(i).is_none()));
     s.frame(
         20,
         &mut b,
-        KeyConfigInput {
-            slots: &events,
-            ..Default::default()
+        if p2 {
+            KeyConfigInput {
+                slots_p2: &events,
+                ..Default::default()
+            }
+        } else {
+            KeyConfigInput {
+                slots: &events,
+                ..Default::default()
+            }
         },
     );
     for (id, w) in want {
@@ -159,6 +177,7 @@ fn app_kcf_04_frame(
             clicks: &clicks,
             right_click,
             slots: &[],
+            slots_p2: &[],
         },
     );
     let (save, key1, text40, exit) = want;

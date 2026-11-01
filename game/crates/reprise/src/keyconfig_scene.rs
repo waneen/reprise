@@ -99,7 +99,8 @@ pub fn input(
             pressed: &slots.sources,
             clicks: &clicks,
             right_click: buttons.just_pressed(MouseButton::Right),
-            slots: &slots.events,
+            slots: &slots.p1.events,
+            slots_p2: &slots.p2.events,
         },
     );
     if out.save {

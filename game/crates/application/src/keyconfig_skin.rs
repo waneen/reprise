@@ -20,6 +20,8 @@ pub struct KeyConfigInput<'a> {
     pub right_click: bool,
     /// 1P の操作の押下（true）・離し（false）。起きた順
     pub slots: &'a [(usize, bool)],
+    /// 2P の操作の押下・離し（LR2 は SP のプレイ以外では 2P の割り当てを 2P として読む）
+    pub slots_p2: &'a [(usize, bool)],
 }
 
 /// 1 フレームの結果
@@ -40,8 +42,9 @@ pub struct KeyConfigSkin {
     config: KeyConfig,
     /// 文字列 40..=55
     texts: [String; 16],
-    /// 皿・鍵盤のタイマー
+    /// 皿・鍵盤のタイマー（1P・2P）
     keys: KeyTimers,
+    keys_p2: KeyTimers,
     /// Esc か右クリックで閉じ始めた（タイマー 2）
     exiting: bool,
 }
@@ -61,6 +64,7 @@ impl KeyConfigSkin {
             config: KeyConfig::default(),
             texts: Default::default(),
             keys: KeyTimers::default(),
+            keys_p2: KeyTimers::p2(),
             exiting: false,
         };
         s.starts.insert(0, 0);
@@ -99,6 +103,9 @@ impl KeyConfigSkin {
         if self.starts.contains_key(&1) {
             for &(slot, down) in input.slots {
                 self.keys.apply(&mut self.starts, now_ms, slot, down);
+            }
+            for &(slot, down) in input.slots_p2 {
+                self.keys_p2.apply(&mut self.starts, now_ms, slot, down);
             }
         }
         // BUTTON のクリック（閉じ始めた後も受ける）

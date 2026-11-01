@@ -68,6 +68,8 @@ fn res() -> PlayResult {
 enum In {
     None,
     Key(usize),
+    /// 2P の鍵盤
+    Key2(usize),
     Scratch,
     Start,
     Esc,
@@ -76,7 +78,7 @@ enum In {
     MouseR(u8),
 }
 
-/// (時刻, 入力, 押し続けている鍵盤) を順に進め、最後のフレームの結果を返す
+/// (時刻, 入力, 押し続けている鍵盤（10 を足すと 2P）) を順に進め、最後のフレームの結果を返す
 fn run(s: &mut ResultSkin, frames: &[(i64, In)], held: &[usize]) -> Option<ResultExit> {
     let mut out = None;
     for &(t, i) in frames {
@@ -86,15 +88,26 @@ fn run(s: &mut ResultSkin, frames: &[(i64, In)], held: &[usize]) -> Option<Resul
             In::Start => vec![(START, true)],
             _ => vec![],
         };
+        let ev2 = match i {
+            In::Key2(n) => vec![(key_slot(n), true)],
+            _ => vec![],
+        };
         let mut h = [false; SLOTS];
+        let mut h2 = [false; SLOTS];
         for &k in held {
-            h[key_slot(k)] = true;
+            if k > 10 {
+                h2[key_slot(k - 10)] = true;
+            } else {
+                h[key_slot(k)] = true;
+            }
         }
         out = s.frame(
             t,
             ResultInput {
                 slots: &ev,
                 held: h,
+                slots_p2: &ev2,
+                held_p2: h2,
                 escape: matches!(i, In::Esc),
                 enter: matches!(i, In::Enter),
                 mouse_left: if let In::MouseL(m) = i { m } else { 0 },
@@ -126,6 +139,7 @@ fn app_res_01_timers(#[case] frames: Vec<i64>, #[case] want: [Option<i64>; 5]) {
 #[case::before_input(true, vec![(300, In::Esc)], (None, None, None, None))]
 #[case::first_shows_rank(true, vec![(400, In::Esc)], (Some(0), None, None, Some(400)))]
 #[case::key(true, vec![(400, In::Key(7))], (Some(0), None, None, Some(400)))]
+#[case::key_2p(true, vec![(400, In::Key2(1))], (Some(0), None, None, Some(400)))]
 #[case::enter(true, vec![(400, In::Enter)], (Some(0), None, None, Some(400)))]
 #[case::mouse_left_held(true, vec![(400, In::MouseL(2))], (Some(0), None, None, Some(400)))]
 #[case::mouse_right_held(true, vec![(400, In::MouseR(2))], (Some(0), None, None, Some(400)))]
@@ -160,7 +174,10 @@ fn app_res_02_advance(
 #[case::to_select(500, 2403, &[], Some(ResultExit::Select))]
 #[case::retry(500, 2403, &[1, 2], Some(ResultExit::Retry))]
 #[case::retry_7_6(500, 2403, &[7, 6], Some(ResultExit::Retry))]
+#[case::retry_2p(500, 2403, &[11, 12], Some(ResultExit::Retry))]
+#[case::retry_1p_white_2p_black(500, 2403, &[1, 14], Some(ResultExit::Retry))]
 #[case::white_only(500, 2403, &[1, 3], Some(ResultExit::Select))]
+#[case::white_only_both_sides(500, 2403, &[1, 13], Some(ResultExit::Select))]
 #[case::black_only(500, 2403, &[2, 4], Some(ResultExit::Select))]
 #[case::no_fadeout(0, 1903, &[], Some(ResultExit::Select))]
 fn app_res_03_close(
@@ -177,12 +194,14 @@ fn app_res_03_close(
     assert_eq!(s.timer(2), Some(t - 1902));
 }
 
-/// APP-RES-04: タイマー 1 の後の鍵盤のタイマー（(時刻, 操作, 押した)）→ (100+n, 120+n)
+/// APP-RES-04: タイマー 1 の後の鍵盤のタイマー（(時刻, 操作（10 を足すと 2P）, 押した)）→ (100+n, 120+n)
 #[rstest]
 #[case::before_input(vec![(300, 2, true)], 1, (None, None))]
 #[case::press(vec![(301, 2, true), (350, 9, false)], 1, (Some(49), None))]
 #[case::release(vec![(301, 2, true), (400, 2, false), (450, 9, false)], 1, (None, Some(50)))]
 #[case::scratch(vec![(301, SCRATCH_UP, true)], 0, (Some(0), None))]
+#[case::p2_press(vec![(301, 12, true), (350, 9, false)], 11, (Some(49), None))]
+#[case::p2_scratch(vec![(301, 10, true)], 10, (Some(0), None))]
 fn app_res_04_key_timers(
     #[case] frames: Vec<(i64, usize, bool)>,
     #[case] n: i32,
@@ -190,10 +209,16 @@ fn app_res_04_key_timers(
 ) {
     let mut s = ResultSkin::new(timing(300, 0, 0, 0), &[], (0, 0), res());
     for (t, slot, down) in frames {
+        let (p1, p2) = if slot >= 10 {
+            (vec![], vec![(slot - 10, down)])
+        } else {
+            (vec![(slot, down)], vec![])
+        };
         s.frame(
             t,
             ResultInput {
-                slots: &[(slot, down)],
+                slots: &p1,
+                slots_p2: &p2,
                 ..Default::default()
             },
         );
