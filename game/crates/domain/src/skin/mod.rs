@@ -29,6 +29,17 @@ pub struct Skin {
     pub fonts: Vec<Option<SystemFont>>,
     /// 画像フォント（LR2 の `#LR2FONT`。`fonts` とは別の番号。読めなかったものは None）
     pub image_fonts: Vec<Option<ImageFont>>,
+    /// 選曲スキンの曲バーの配置
+    pub bars: BarLayout,
+}
+
+/// 選曲スキンの曲バーの配置（LR2 `#BAR_CENTER`・`#BAR_AVAILABLE`。無ければ 0）
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BarLayout {
+    /// 選んでいるバーを置くスロット（0..=29）
+    pub center: i32,
+    /// マウスで選べるスロットの範囲（両端を含む）
+    pub available: (i32, i32),
 }
 
 /// システムフォント（LR2 `#FONT,大きさ,太さ,種類`）
@@ -143,8 +154,15 @@ pub enum ElementKind {
         value_ref: i32,
         direction: i32,
     },
+    /// クリックの指定（クリック可・パネル・向き）は `source` の追加引数 2..4 にある（LR2 の SRC 第 12..14 引数）
     Button {
         action: i32,
+    },
+    /// 選曲の曲バーの題名（LR2 `#SRC_BAR_TITLE`。0 = 通常、1 = 新着）
+    BarTitle {
+        index: i32,
+        font: u32,
+        align: i32,
     },
     NoteLane {
         lane: i32,

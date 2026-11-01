@@ -95,6 +95,7 @@ fn skin(elements: Vec<Element>) -> Skin {
         timing: Default::default(),
         fonts: vec![],
         image_fonts: vec![],
+        bars: Default::default(),
     }
 }
 fn size(_: u32) -> Option<(u32, u32)> {
@@ -655,4 +656,282 @@ fn dom_skd_14_bga(
         })
         .collect();
     assert_eq!(got, want);
+}
+
+// ---------------------------------------------------------------------------
+// 選曲（DOM-SKD-15..18）
+// ---------------------------------------------------------------------------
+
+/// 曲バーのスキン: BAR_CENTER 2、スロット 0..=4 の OFF は (0, 100i)、ON[2] は (20, 200)。
+/// BAR_BODY は種類 0 = 切り出し x 0、種類 1 = x 10。描画順は OFF = 10+i、ON = 20
+fn bar_skin(extra: Vec<Element>) -> Skin {
+    let mut es = vec![];
+    for kind in 0..2 {
+        es.push(el(
+            other("BAR_BODY", kind),
+            src([kind * 10, 0, 10, 10], (1, 1), 0, 0),
+            0,
+            vec![],
+        ));
+    }
+    for i in 0..5 {
+        let mut e = el(
+            other("BAR_BODY_OFF", i),
+            src([0, 0, 10, 10], (1, 1), 0, 0),
+            0,
+            vec![kf(0, [0.0, 100.0 * i as f32, 200.0, 50.0], 255, 0)],
+        );
+        e.order = 10 + i as u32;
+        es.push(e);
+    }
+    let mut on = el(
+        other("BAR_BODY_ON", 2),
+        src([0, 0, 10, 10], (1, 1), 0, 0),
+        0,
+        vec![kf(0, [20.0, 200.0, 200.0, 50.0], 255, 0)],
+    );
+    on.order = 20;
+    es.push(on);
+    es.extend(extra);
+    let mut sk = skin(es);
+    sk.bars.center = 2;
+    sk
+}
+fn bars(kinds: &[i32]) -> Vec<BarView> {
+    kinds
+        .iter()
+        .enumerate()
+        .map(|(i, &kind)| BarView {
+            kind,
+            title: format!("T{i}"),
+            key_mode: if kind == 0 { 7 } else { 0 },
+            level: i as i32 + 1,
+            difficulty: 2,
+            lamp: i as i32 % 2,
+        })
+        .collect()
+}
+fn select_quads(skin: &Skin, st: &dyn SkinState, view: &SelectView<'_>) -> Vec<Quad> {
+    draw_select(skin, st, view, &size)
+        .into_iter()
+        .filter_map(|d| match d {
+            Draw::Quad(q) => Some(q),
+            _ => None,
+        })
+        .collect()
+}
+
+/// DOM-SKD-15: 曲バー（(切り出し x, 位置 x, 位置 y) を描画順に）
+#[rstest]
+// スロット 1..=4 に バー (0 − 2 + i) % 3。スロット 2 は ON（描画順 20 なので最後）
+#[case::still(0, 2, &[0, 1, 1], vec![(10.0, 0.0, 100.0), (10.0, 0.0, 300.0), (10.0, 0.0, 400.0), (0.0, 20.0, 200.0)])]
+// 端数 500: スロット i と i−1 の中間。描画順も中間（10, 15, 16, 13）
+#[case::half(500, 2, &[0, 1, 1], vec![(10.0, 0.0, 50.0), (10.0, 0.0, 350.0), (0.0, 10.0, 150.0), (10.0, 10.0, 250.0)])]
+// 選んだスロットが 3 で ON[3] が無いと、スロット 3・4 は描かない
+#[case::slot_without_on(0, 3, &[0, 1, 1], vec![(10.0, 0.0, 100.0), (0.0, 0.0, 200.0)])]
+#[case::empty_list(0, 2, &[], vec![])]
+fn dom_skd_15_select_bars(
+    #[case] position: i64,
+    #[case] slot: i32,
+    #[case] kinds: &[i32],
+    #[case] want: Vec<(f32, f32, f32)>,
+) {
+    let sk = bar_skin(vec![]);
+    let list = bars(kinds);
+    let view = SelectView {
+        position,
+        slot,
+        bars: &list,
+    };
+    let got: Vec<(f32, f32, f32)> = select_quads(&sk, &st(&[(0, 0)]), &view)
+        .iter()
+        .map(|q| (q.src[0], q.dst[0], q.dst[1]))
+        .collect();
+    assert_eq!(got, want);
+    assert_eq!(
+        slot_bar(position, 2, 1, kinds.len()),
+        (!kinds.is_empty()).then_some(2 % kinds.len().max(1))
+    );
+}
+
+/// DOM-SKD-16: 曲バーの部品（BAR_FLASH・BAR_TITLE・BAR_LEVEL・BAR_LAMP はバーの位置からの相対）
+#[rstest]
+#[case::flash_on_selected("BAR_FLASH", 0, vec![(21.0, 205.0)])]
+// レベルは曲だけ、#DIFFICULTY 2 の添字（バー 0 = 曲 のスロット 2 と、スロット 4 のバー 2 = フォルダは描かない）
+#[case::level_songs_only("BAR_LEVEL", 2, vec![(21.0, 205.0)])]
+#[case::level_other_difficulty_unused("BAR_LEVEL", 0, vec![])]
+// ランプ 1 はバー 1 だけ（スロット 3）
+#[case::lamp_by_value("BAR_LAMP", 1, vec![(1.0, 305.0)])]
+fn dom_skd_16_bar_parts(#[case] command: &str, #[case] index: i32, #[case] want: Vec<(f32, f32)>) {
+    let mut part = el(
+        other(command, index),
+        src([0, 0, 100, 10], (10, 1), 0, 0),
+        0,
+        vec![kf(0, [1.0, 5.0, 3.0, 4.0], 255, 0)],
+    );
+    part.source.as_mut().unwrap().params = [0, 1, 1, 0, 0];
+    // DST の条件は見ない
+    part.conditions = vec![OptionId(999)];
+    let sk = bar_skin(vec![part]);
+    let list = bars(&[0, 1, 1]);
+    let view = SelectView {
+        position: 0,
+        slot: 2,
+        bars: &list,
+    };
+    let got: Vec<(f32, f32)> = select_quads(&sk, &st(&[(0, 0)]), &view)
+        .iter()
+        .filter(|q| q.dst[2] == 3.0)
+        .map(|q| (q.dst[0], q.dst[1]))
+        .collect();
+    assert_eq!(got, want);
+}
+
+/// DOM-SKD-19: 題名は BAR_TITLE[0] にバーの位置からの相対で（[1] の新着は使わない）
+#[rstest]
+#[case::normal(0, vec![("T0".to_string(), [25.0, 207.0, 100.0, 20.0])])]
+#[case::new_unused(1, vec![])]
+fn dom_skd_19_bar_title(#[case] index: i32, #[case] want: Vec<(String, [f32; 4])>) {
+    let t = Element {
+        kind: ElementKind::BarTitle {
+            index,
+            font: 0,
+            align: 0,
+        },
+        source: None,
+        timer: TimerId(0),
+        conditions: vec![],
+        looping: Some(0),
+        dst_extra: [0; 2],
+        order: 0,
+        keyframes: vec![kf(0, [5.0, 7.0, 100.0, 20.0], 255, 0)],
+    };
+    let mut sk = bar_skin(vec![t]);
+    sk.fonts = vec![Some(SystemFont {
+        size: 20,
+        thickness: 1,
+        kind: 0,
+    })];
+    let list = bars(&[0]);
+    let view = SelectView {
+        position: 0,
+        slot: 2,
+        bars: &list,
+    };
+    let got: Vec<(String, [f32; 4])> = draw_select(&sk, &st(&[(0, 0)]), &view, &size)
+        .into_iter()
+        .filter_map(|d| match d {
+            Draw::Text(r) => Some((r.text, r.dst)),
+            _ => None,
+        })
+        .filter(|(_, d)| d[1] > 200.0 && d[1] < 300.0)
+        .collect();
+    assert_eq!(got, want);
+}
+
+struct BtnSt(St, Option<i32>);
+impl SkinState for BtnSt {
+    fn timer(&self, id: i32) -> Option<i64> {
+        self.0.timer(id)
+    }
+    fn option(&self, id: i32) -> bool {
+        self.0.option(id)
+    }
+    fn number(&self, id: i32) -> Option<i64> {
+        self.0.number(id)
+    }
+    fn bar(&self, k: i32) -> f64 {
+        self.0.bar(k)
+    }
+    fn slider(&self, k: i32) -> f64 {
+        self.0.slider(k)
+    }
+    fn turntable(&self, s: i32) -> f32 {
+        self.0.turntable(s)
+    }
+    fn text(&self, id: i32) -> Option<&str> {
+        self.0.text(id)
+    }
+    fn button(&self, _: i32) -> Option<i32> {
+        self.1
+    }
+}
+
+/// ボタン（動作 13、3 コマ、DST (100, 100, 40, 20)。SRC 引数 12..14 = クリック, パネル, 向き）
+fn button_skin(params: [i32; 5], conditions: Vec<OptionId>, timer: i32) -> Skin {
+    let mut e = el(
+        ElementKind::Button { action: 13 },
+        src([0, 0, 30, 10], (3, 1), 0, 0),
+        timer,
+        vec![kf(0, [100.0, 100.0, 40.0, 20.0], 255, 0)],
+    );
+    e.source.as_mut().unwrap().params = params;
+    e.conditions = conditions;
+    skin(vec![e])
+}
+
+/// DOM-SKD-17: BUTTON は状態値のコマ（コマ数以上は最後、負は 0）。状態値が分からなければ描かない
+#[rstest]
+#[case::value_1(Some(1), vec![], Some(10.0))]
+#[case::over_last(Some(7), vec![], Some(20.0))]
+#[case::negative(Some(-1), vec![], Some(0.0))]
+#[case::unknown(None, vec![], None)]
+#[case::condition_false(Some(1), vec![OptionId(5)], None)]
+fn dom_skd_17_button(
+    #[case] value: Option<i32>,
+    #[case] conditions: Vec<OptionId>,
+    #[case] want_src_x: Option<f32>,
+) {
+    let sk = button_skin([13, 1, 0, 0, 0], conditions, 0);
+    let s = BtnSt(st(&[(0, 0)]), value);
+    let list = vec![];
+    let view = SelectView {
+        position: 0,
+        slot: 0,
+        bars: &list,
+    };
+    let got = select_quads(&sk, &s, &view).first().map(|q| q.src[0]);
+    assert_eq!(got, want_src_x);
+    // プレイ画面の状態（状態値なし）では描かない
+    assert!(quads(&sk, &st(&[(0, 0)]), &PlayView::default(), &size).is_empty());
+}
+
+/// DOM-SKD-18: マウスの位置とボタンのクリック（(x, y) → クリックの向き）
+#[rstest]
+#[case::right_half([13, 1, 0, 0, 0], 120, 110, vec![1])]
+#[case::left_half([13, 1, 0, 0, 0], 119, 110, vec![-1])]
+#[case::edges_inclusive([13, 1, 0, 0, 0], 140, 120, vec![1])]
+#[case::outside([13, 1, 0, 0, 0], 141, 110, vec![])]
+#[case::plus_only([13, 1, 0, 1, 0], 100, 110, vec![1])]
+#[case::minus_only([13, 1, 0, 2, 0], 139, 110, vec![-1])]
+#[case::other_side_value([13, 1, 0, 3, 0], 120, 110, vec![])]
+#[case::not_clickable([13, 0, 0, 0, 0], 120, 110, vec![])]
+#[case::other_panel([13, 1, 2, 0, 0], 120, 110, vec![])]
+#[case::current_panel([13, 1, -1, 0, 0], 120, 110, vec![1])]
+fn dom_skd_18_mouse(
+    #[case] params: [i32; 5],
+    #[case] x: i32,
+    #[case] y: i32,
+    #[case] want: Vec<i32>,
+) {
+    let sk = button_skin(params, vec![], 0);
+    let got: Vec<i32> = button_clicks(&sk, &st(&[(0, 0)]), x, y, -1)
+        .iter()
+        .map(|c| {
+            assert_eq!(c.action, 13);
+            c.delta
+        })
+        .collect();
+    assert_eq!(got, want);
+    // 画面の外・タイマーが止まっている・条件が偽ならクリックしない
+    assert_eq!(mouse_on([630.0, 0.0, 20.0, 20.0], (640, 480), 640, 10), 0);
+    assert!(button_clicks(&button_skin(params, vec![], 7), &st(&[(0, 0)]), x, y, -1).is_empty());
+    assert!(button_clicks(
+        &button_skin(params, vec![OptionId(5)], 0),
+        &st(&[(0, 0)]),
+        x,
+        y,
+        -1
+    )
+    .is_empty());
 }

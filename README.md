@@ -15,11 +15,13 @@ Lunatic Rave 2 (LR2) のプレイ感の再現を目指す、Rust製のクロス�
 
 ## ビルドと実行
 ```sh
-cd game && cargo run -p reprise --release -- [--songs path/to/BMS...] [path/to/chart.bms] [--gauge groove|easy|hard|death|pattack|gattack] [--skin path/to/play.csv [--skin-root path/to/LR2]] [--hs 100] [--hsfix off|max|min|avg|const|main] [--cover 0..100] [--offset ms] [--auto] [--data path/to/folder]
+cd game && cargo run -p reprise --release -- [--songs path/to/BMS...] [path/to/chart.bms] [--gauge groove|easy|hard|death|pattack|gattack] [--skin path/to/play.csv] [--select-skin path/to/select.csv] [--skin-root path/to/LR2] [--hs 100] [--hsfix off|max|min|avg|const|main] [--cover 0..100] [--offset ms] [--auto] [--data path/to/folder]
 ```
 `--songs` に譜面のフォルダ（何個でも）を渡すと選曲画面から始まります。起動のたびにフォルダの中を読み直します。フォルダを開くと、その中の曲フォルダの譜面が並びます（曲フォルダが無ければ中のフォルダが並びます。LR2 と同じ）。皿（左 Shift = 上・左 Ctrl = 下）か ↑↓ で選び、鍵盤 1/3/5/7・Enter・→ で決定、鍵盤 6 でオートプレイ、鍵盤 2・← で戻り、最初の一覧で Esc なら終了します。プレイ中に Esc で選曲に戻ります。譜面ファイルを直接渡すとその譜面のプレイだけをして、Esc で終了します。
 
-設定は `--data` のフォルダの `config.json` に保存し、次からは引数無しで起動できます（起動引数で渡した `--songs`・`--skin`・`--skin-root`・`--gauge`・`--hs`・`--hsfix`・`--cover`・`--offset` も保存します）。キーの割り当ては今は `config.json` の `keys` を書き換えて変えます（LR2 と同じく選曲スキンのボタンからキー設定スキンの画面に入る作りは、選曲スキンの描画のあとに入れます）。ゲームパッドの軸は ±0.9 でボタンとして読み、`analog_scratch_ms` に数値（ms）を入れると皿に割り当てた軸を回した向きで読むアナログ皿になります（beatoraja と同じ方式。LR2 には無い）。
+`--select-skin` に LR2 の選曲スキン（.lr2skin / .csv。種別 5）を渡すと選曲画面をそれで描き、無ければ（読めなければ）文字の一覧で描きます。スキンで描くときは LR2 と同じく、一覧は動くアニメーションで流れ（押して 300ms・押し続けて 70ms・ホイールで 200ms）、マウスのホイールで一覧を動かせ、マウスでバーを押すとそのバーを選び（`#BAR_AVAILABLE` の外のバーなら一覧が動き）、選んでいるバーを押すと決定します。BUTTON は 15（プレイ）・16（オートプレイ）だけが効き、13（キー設定）・14（スキン選択）は今はクリックしても何もしません（画面は次に入れます）。ほかのボタン（パネル・絞り込み・並べ替えなど）も対応する機能が無いので何もしません。
+
+設定は `--data` のフォルダの `config.json` に保存し、次からは引数無しで起動できます（起動引数で渡した `--songs`・`--skin`・`--select-skin`・`--skin-root`・`--gauge`・`--hs`・`--hsfix`・`--cover`・`--offset` も保存します）。選曲スキンは `config.json` の `select_skin`（パス）でも指定できます。キーの割り当ては今は `config.json` の `keys` を書き換えて変えます（LR2 と同じく選曲スキンのボタン 13 からキー設定スキンの画面に入る作りは次に入れます）。ゲームパッドの軸は ±0.9 でボタンとして読み、`analog_scratch_ms` に数値（ms）を入れると皿に割り当てた軸を回した向きで読むアナログ皿になります（beatoraja と同じ方式。LR2 には無い）。
 
 1P の 7 鍵（5 鍵）のプレイ画面です。`--skin` に LR2 のプレイスキン（.lr2skin / .csv）を渡すとそれで描き、無ければ四角形だけで描きます。`--skin-root` はスキン中のパスの基準（LR2 本体のフォルダ。既定は今のフォルダ）。キーの既定は皿 = 左 Shift / 左 Ctrl、鍵盤 1〜7 = Z S X D C F V、START = Q、SELECT = W。
 

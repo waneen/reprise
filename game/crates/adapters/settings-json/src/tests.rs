@@ -27,6 +27,7 @@ fn sjs_01_missing(#[case] rel: &str) {
     let mut s = Settings {
         songs: vec!["/a".into(), "C:\\b".into()],
         skin: Some("LR2files/Theme/x/play.csv".into()),
+        select_skin: Some("LR2files/Theme/x/select.csv".into()),
         skin_root: Some("/lr2".into()),
         gauge: GaugeType::Hazard,
         ..Default::default()
@@ -81,4 +82,22 @@ fn sjs_04_errors(#[case] text: &str, #[case] via_file: bool) {
         let v: Value = serde_json::from_str(text).unwrap();
         assert!(matches!(from_json(&v), Err(PortError::Parse(_))));
     }
+}
+
+/// SJS-05: 選曲スキン
+#[rstest]
+#[case::path(
+    r#"{"select_skin": "LR2files/Theme/x/select.csv"}"#,
+    Some(PathBuf::from("LR2files/Theme/x/select.csv"))
+)]
+#[case::null(r#"{"select_skin": null}"#, None)]
+#[case::missing("{}", None)]
+fn sjs_05_select_skin(#[case] text: &str, #[case] want: Option<PathBuf>) {
+    let v: Value = serde_json::from_str(text).unwrap();
+    let s = from_json(&v).unwrap();
+    assert_eq!(s.select_skin, want);
+    assert_eq!(
+        to_json(&s)["select_skin"],
+        v.get("select_skin").cloned().unwrap_or(Value::Null)
+    );
 }

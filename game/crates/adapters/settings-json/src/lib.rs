@@ -7,6 +7,7 @@
 //! | SJS-02 | 保存した設定は読み直すと同じ（オートプレイは保存しない） |
 //! | SJS-03 | 書かれていない項目は既定値、知らない項目は無視。操作の割り当ては書かれた操作だけ置き換える |
 //! | SJS-04 | JSON として読めない・値の種類が違う・知らない名前（ゲージ・HS-FIX・物理入力の種類）は `Parse` エラー |
+//! | SJS-05 | 選曲スキンは `select_skin`（パス。null・無しは None） |
 use application::ports::{PortError, SettingsStore};
 use application::settings::Settings;
 use domain::input::{Source, SLOTS};
@@ -104,6 +105,7 @@ pub fn to_json(s: &Settings) -> Value {
     json!({
         "songs": s.songs,
         "skin": s.skin,
+        "select_skin": s.select_skin,
         "skin_root": s.skin_root,
         "gauge": name_of(&GAUGES, s.gauge),
         "hi_speed": o.hi_speed,
@@ -134,6 +136,7 @@ pub fn from_json(v: &Value) -> Result<Settings, PortError> {
             }
             "skin" if !v.is_null() => s.skin = Some(path(v)?),
             "skin_root" if !v.is_null() => s.skin_root = Some(path(v)?),
+            "select_skin" if !v.is_null() => s.select_skin = Some(path(v)?),
             "gauge" => s.gauge = value_of(&GAUGES, v, "gauge")?,
             "hi_speed" => s.options.hi_speed = int(v, "hi_speed")?,
             "hs_fix" => s.options.hs_fix = value_of(&HS_FIX, v, "hs_fix")?,
