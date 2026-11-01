@@ -4,7 +4,9 @@
 //! ブラウザ版は、ページの JavaScript が選ばれたファイルを `globalThis.repriseFiles`（パス → `Uint8Array` の `Map`）に、
 //! 起動引数（`--songs` と `--skin-root`）を `globalThis.repriseArgs`（文字列の配列）に置いてから起動する（`web/index.html`）。
 //! 設定はネイティブと同じ `config.json` の中身を、ブラウザ版はページの保存領域（`localStorage`）に置く。
-use application::ports::{ChartLoader, FileSystem, LibrarySource, ScoreRepository, SettingsStore};
+use application::ports::{
+    ChartLoader, FileSystem, LibrarySource, ScoreRepository, SettingsStore, SongQuery, TableSource,
+};
 use domain::select::Library;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -57,6 +59,21 @@ mod imp {
                 None
             }
         }
+    }
+    /// カスタムフォルダの SQL を引く接続（`song.db` に `score.db` を付けたもの。記録の DB を開いた後に呼ぶ）
+    pub fn song_query(data_dir: &Path) -> Option<Box<dyn SongQuery>> {
+        match song_db::SqliteSongQuery::open(&data_dir.join("song.db"), &data_dir.join("score.db"))
+        {
+            Ok(q) => Some(Box::new(q)),
+            Err(e) => {
+                eprintln!("カスタムフォルダの SQL を引けない: {e:?}");
+                None
+            }
+        }
+    }
+    /// 難易度表の取り方と置き場所（`--data` のフォルダの `table`）
+    pub fn table_source(data_dir: &Path) -> Option<Arc<dyn TableSource>> {
+        Some(Arc::new(bms_table::HttpTables::new(data_dir.join("table"))))
     }
     /// 設定は記録と同じフォルダの config.json
     pub fn settings_store(data_dir: &Path) -> Option<Store> {
@@ -130,6 +147,14 @@ mod imp {
     }
     /// ブラウザ版は記録を保存しない
     pub fn open_scores(_data_dir: &Path) -> Option<Scores> {
+        None
+    }
+    /// ブラウザ版はカスタムフォルダの SQL を引けない（曲の DB が無い）
+    pub fn song_query(_data_dir: &Path) -> Option<Box<dyn SongQuery>> {
+        None
+    }
+    /// ブラウザ版は難易度表を取ってこない
+    pub fn table_source(_data_dir: &Path) -> Option<Arc<dyn TableSource>> {
         None
     }
     /// 設定は `config.json` と同じ中身をページの保存領域（`localStorage`）に置く

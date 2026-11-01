@@ -38,8 +38,11 @@ image = { version = "0.25", default-features = false, features = ["png", "bmp", 
 score-import-lr2 = { path = "../adapters/score-import-lr2" }
 score-import-beatoraja = { path = "../adapters/score-import-beatoraja" }
 score-db = { path = "../adapters/score-db" }
-# 曲の DB（LR2 の song.db と同じテーブル）とフォルダの見張り
+# 曲の DB（LR2 の song.db と同じテーブル）とフォルダの見張り、カスタムフォルダの SQL
 library-watch = { path = "../adapters/library-watch" }
+song-db = { path = "../adapters/song-db" }
+# 難易度表（beatoraja の難易度表を HTTP で取ってくる）
+bms-table = { path = "../adapters/bms-table" }
 # TEXT のシステムフォント（OS のフォントから探す）
 bevy = { version = "0.19.1", default-features = false, features = ["system_font_discovery"] }
 

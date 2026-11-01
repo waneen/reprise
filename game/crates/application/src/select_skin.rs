@@ -15,6 +15,10 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const BAR_SONG: i32 = 0;
 /// フォルダのバーの種類
 pub const BAR_FOLDER: i32 = 1;
+/// 難易度表とそのレベルのバーの種類（beatoraja の `BarRenderer` の `TableBar`・`HashBar` の 2。カスタムフォルダはその `type`）
+pub const BAR_TABLE: i32 = 2;
+/// 難易度表にあって曲の一覧に無い譜面のバーの種類（beatoraja の `existsSong` でない `SongBar` の 4）
+pub const BAR_MISSING: i32 = 4;
 
 /// 選曲の一覧の 1 本（LR2 の `SONGDATA` のうち作れるもの）
 #[derive(Debug, Clone, PartialEq)]
@@ -58,24 +62,42 @@ pub fn lr2_clear(lamp: ClearLamp) -> i32 {
 }
 
 impl SelectBar {
-    /// APP-SEL-01: 一覧の 1 本。曲は種類 0、フォルダは種類 1（OpenLR2 が song.db に書く `type`）。`record` は曲の記録を引く
+    /// APP-SEL-01: 一覧の 1 本。曲は種類 0、フォルダは種類 1（OpenLR2 が song.db に書く `type`）、カスタムフォルダはその `type`、
+    /// 難易度表とそのレベルは 2・表にあって曲の一覧に無い譜面は 4（beatoraja）。`record` は曲の記録を引く
     pub fn new(
         library: &Library,
         bar: &Bar,
         record: &dyn Fn(&ChartHash) -> Option<ScoreRecord>,
     ) -> Self {
+        let folder = |kind: i32, title: &str, artist: &str, genre: &str| Self {
+            kind,
+            title: title.to_string(),
+            subtitle: String::new(),
+            artist: artist.to_string(),
+            genre: genre.to_string(),
+            key_mode: None,
+            level: 0,
+            difficulty: 0,
+            record: None,
+        };
         match bar {
-            Bar::Folder { title, .. } => Self {
-                kind: BAR_FOLDER,
-                title: title.clone(),
-                subtitle: String::new(),
-                artist: String::new(),
-                genre: String::new(),
-                key_mode: None,
-                level: 0,
-                difficulty: 0,
-                record: None,
-            },
+            Bar::Folder { title, .. } => folder(BAR_FOLDER, title, "", ""),
+            // カスタムフォルダ: LR2 は `folder` の `title`・`info_a`・`category` を題名・アーティスト・ジャンルに読む
+            Bar::Custom(c) => {
+                let c = &library.custom()[*c];
+                folder(c.kind, &c.title, &c.info_a, &c.category)
+            }
+            Bar::Table(t) => folder(BAR_TABLE, &library.tables()[*t].name, "", ""),
+            Bar::Level(t, l) => folder(BAR_TABLE, &library.tables()[*t].levels[*l].name, "", ""),
+            Bar::Missing(t, l, k) => {
+                let c = library.table_chart(*t, *l, *k);
+                folder(
+                    BAR_MISSING,
+                    c.map_or("", |c| &c.title),
+                    c.map_or("", |c| &c.artist),
+                    "",
+                )
+            }
             Bar::Song(i) => {
                 let s = &library.songs()[*i];
                 Self {

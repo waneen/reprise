@@ -90,6 +90,7 @@ fn lwt_01_start(#[case] again: bool, #[case] first: Vec<&str>, #[case] then: Vec
             fs: &file_system::StdFs,
             loaders: &ls,
             now: 1,
+            decode: song_db::shift_jis,
         };
         library::update(&scan, &mut db, std::slice::from_ref(&root)).unwrap();
         // 前の起動はフォルダを書き換える前（日時は秒なので、同じ秒の書き換えには LR2 と同じく気づかない）

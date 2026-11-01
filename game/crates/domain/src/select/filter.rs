@@ -1,8 +1,8 @@
 //! 選曲の並べ替え・絞り込み（LR2 の `config.select.sort`・`key`・`difficulty`。DOM-SEL-12..16）。
 //! OpenLR2 の `LR2_songmanage.cpp`（`LoadFilteredBmsListFromDB`・`SetUndefinedDifficulty`・`CMP_SongDataBy*`・
 //! `adjustFilterKey`）・`Scene02_Songselect.cpp`（`InitSelectBySearchResult`・→ と SELECT の難易度の切り替え）を仕様として参照した。
-use super::{upper, SongInfo};
-use crate::chart::{ChartHash, KeyMode};
+use super::{upper, Lookup, SongInfo};
+use crate::chart::KeyMode;
 use std::cmp::Ordering;
 use std::path::Path;
 
@@ -151,7 +151,7 @@ pub(super) fn list_songs(
     songs: &[SongInfo],
     ids: &[usize],
     filter: &mut ListFilter,
-    record: &dyn Fn(&ChartHash) -> SortRecord,
+    look: &dyn Lookup,
 ) -> Listed {
     // 問い合わせの順（フォルダ → 鍵盤数 → 難易度 → レベル。同じならパス）
     let mut rows = ids.to_vec();
@@ -160,27 +160,9 @@ pub(super) fn list_songs(
         (dir_of(s), s.key_mode, s.difficulty, s.level, upper(&s.path))
     });
     loop {
-        let passing: Vec<usize> = rows
-            .iter()
-            .copied()
-            .filter(|&i| key_passes(filter.key, songs[i].key_mode))
-            .collect();
-        if passing.is_empty() {
-            // DOM-SEL-12: 鍵盤数を先へ（0 = すべては必ず通る）
-            let start = filter.key;
-            let mut m = start;
-            loop {
-                m = (m + 1) % (KEY_MAX + 1);
-                if m == start {
-                    return vec![];
-                }
-                if rows.iter().any(|&i| key_passes(m, songs[i].key_mode)) {
-                    break;
-                }
-            }
-            filter.key = m;
-            continue;
-        }
+        let Some(passing) = key_filtered(songs, &rows, filter) else {
+            return vec![];
+        };
         // DOM-SEL-14: 選んだ難易度が無ければ先の難易度へ（無ければすべて）
         let mut count = [0; 6];
         for &i in &passing {
@@ -195,9 +177,71 @@ pub(super) fn list_songs(
             continue;
         }
         let mut out = by_difficulty(songs, &passing, d);
-        sort(songs, &mut out, filter.sort, record);
+        sort(songs, &mut out, filter.sort, look);
         return out;
     }
+}
+
+/// DOM-SEL-12: 鍵盤数で絞り込む。1 つも残らなければ鍵盤数を先へ回して（0 = すべては必ず通る）`filter` を書き換える。
+/// どの鍵盤数でも残らなければ None
+fn key_filtered(songs: &[SongInfo], rows: &[usize], filter: &mut ListFilter) -> Option<Vec<usize>> {
+    let pass = |m: i32| -> Vec<usize> {
+        rows.iter()
+            .copied()
+            .filter(|&i| key_passes(m, songs[i].key_mode))
+            .collect()
+    };
+    let passing = pass(filter.key);
+    if !passing.is_empty() {
+        return Some(passing);
+    }
+    let start = filter.key;
+    let mut m = start;
+    loop {
+        m = (m + 1) % (KEY_MAX + 1);
+        if m == start {
+            return None;
+        }
+        let p = pass(m);
+        if !p.is_empty() {
+            filter.key = m;
+            return Some(p);
+        }
+    }
+}
+
+/// DOM-SEL-24: カスタムフォルダの SQL で引いた譜面（`ids` は引いた順）を並べる（LR2 `LoadFilteredBmsListFromDB` の `flag` 1）。
+/// 難易度は絞り込まない。同じ MD5 は最初の 1 つで、`max` が正なら先頭から `max` 個まで。
+/// `ordered` なら鍵盤数も絞り込まず並べ替えもしない。そうでなければ鍵盤数で絞り込み（DOM-SEL-12）、`filter.sort` で並べ替える
+pub(super) fn list_custom(
+    songs: &[SongInfo],
+    ids: &[usize],
+    filter: &mut ListFilter,
+    max: i32,
+    ordered: bool,
+    look: &dyn Lookup,
+) -> Listed {
+    let take = |rows: Vec<usize>| -> Vec<usize> {
+        let mut out: Vec<usize> = vec![];
+        for i in rows {
+            if max > 0 && out.len() == max as usize {
+                break;
+            }
+            if !out.iter().any(|&j| songs[j].hash == songs[i].hash) {
+                out.push(i);
+            }
+        }
+        out
+    };
+    if ordered {
+        return by_difficulty(songs, &take(ids.to_vec()), 0);
+    }
+    let Some(passing) = key_filtered(songs, ids, filter) else {
+        return vec![];
+    };
+    let mut out = by_difficulty(songs, &take(passing), 0);
+    sort(songs, &mut out, filter.sort, look);
+    out
 }
 
 /// DOM-SEL-14: 難易度の絞り込み（LR2 の 1 行ずつの処理）。単位の中で、選んだ難易度以下で最も高い難易度の譜面（無ければ最も低い難易度の譜面）を残す。
@@ -250,16 +294,11 @@ fn by_difficulty(songs: &[SongInfo], rows: &[usize], filter: i32) -> Listed {
 }
 
 /// DOM-SEL-15: 並べ替え（LR2 の `qsort` は安定でないので、同順位はパス順にする）
-fn sort(
-    songs: &[SongInfo],
-    out: &mut Listed,
-    kind: i32,
-    record: &dyn Fn(&ChartHash) -> SortRecord,
-) {
+fn sort(songs: &[SongInfo], out: &mut Listed, kind: i32, look: &dyn Lookup) {
     // 記録は 1 曲につき 1 回だけ引く
     let recs: std::collections::HashMap<usize, SortRecord> = if matches!(kind, 3 | 4) {
         out.iter()
-            .map(|(i, _)| (*i, record(&songs[*i].hash)))
+            .map(|(i, _)| (*i, look.record(&songs[*i].hash)))
             .collect()
     } else {
         Default::default()

@@ -457,12 +457,29 @@ fn main() {
     let _ = platform::score_importers();
     let scores = ScoreDb(platform::open_scores(&data_dir).map(Mutex::new));
     let direct = chart_path.is_some();
-    let (library, feed) = if direct {
-        (Library::default(), None)
+    let table_feed = select_scene::TableFeed::default();
+    let (library, feed, query) = if direct {
+        (Library::default(), None, None)
     } else {
         let (lib, feed) = platform::library(&data_dir, &s.songs, fs.clone(), chart_loaders);
         eprintln!("譜面 {} 件", lib.songs().len());
-        (lib, feed)
+        // 難易度表: 手元のものですぐ出し、手元に無いものは別のスレッドで取ってくる（beatoraja の起動時と同じ）
+        let lib = match platform::table_source(&data_dir) {
+            Some(src) => {
+                let cached = application::tables::cached(src.as_ref(), &s.tables);
+                let urls = s.tables.clone();
+                let out = table_feed.0.clone();
+                std::thread::spawn(move || {
+                    if application::tables::fetch_missing(src.as_ref(), &urls) {
+                        let t = application::tables::cached(src.as_ref(), &urls);
+                        *out.lock().unwrap_or_else(|e| e.into_inner()) = Some(t);
+                    }
+                });
+                lib.with_tables(cached)
+            }
+            None => lib,
+        };
+        (lib, feed, platform::song_query(&data_dir))
     };
     let skin_root = s
         .skin_root
@@ -551,8 +568,10 @@ fn main() {
         select_skin,
         s_select,
         option_names,
+        query,
     ))
     .insert_resource(select_scene::LibraryFeed(feed))
+    .insert_resource(table_feed)
     .init_resource::<preview::PreviewPlayer>()
     .add_systems(
         PreUpdate,

@@ -77,6 +77,49 @@ fn app_sel_01_bar(
     #[case] want: BarView,
 ) {
     assert_eq!(bar_of(info, rec).view(), want);
+    // カスタムフォルダ・難易度表・レベル・無い譜面
+    use domain::select::{CustomFolder, DifficultyTable, TableChart, TableLevel};
+    let lib = Library::new(vec![], vec![], vec![])
+        .with_custom(vec![CustomFolder {
+            title: "C".into(),
+            info_a: "IA".into(),
+            category: "CAT".into(),
+            kind: 3,
+            ..Default::default()
+        }])
+        .with_tables(vec![DifficultyTable {
+            url: "u".into(),
+            name: "T".into(),
+            levels: vec![TableLevel {
+                name: "★1".into(),
+                charts: vec![TableChart {
+                    md5: "00".into(),
+                    sha256: String::new(),
+                    title: "M".into(),
+                    artist: "MA".into(),
+                }],
+            }],
+        }]);
+    let of = |b: Bar| {
+        let x = SelectBar::new(&lib, &b, &|_| None);
+        (x.kind, x.title, x.artist, x.genre, x.key_mode)
+    };
+    assert_eq!(
+        of(Bar::Custom(0)),
+        (3, "C".into(), "IA".into(), "CAT".into(), None)
+    );
+    assert_eq!(
+        of(Bar::Table(0)),
+        (2, "T".into(), "".into(), "".into(), None)
+    );
+    assert_eq!(
+        of(Bar::Level(0, 0)),
+        (2, "★1".into(), "".into(), "".into(), None)
+    );
+    assert_eq!(
+        of(Bar::Missing(0, 0, 0)),
+        (4, "M".into(), "MA".into(), "".into(), None)
+    );
 }
 
 /// APP-SEL-02: タイマー（(時刻, 位置が動いた, 選んだバーが変わった) の後のタイマー 1, 10, 11 の経過）

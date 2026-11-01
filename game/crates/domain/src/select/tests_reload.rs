@@ -45,6 +45,7 @@ fn names(l: &Library, bars: &[Bar]) -> Vec<String> {
         .map(|b| match b {
             Bar::Folder { title, .. } => format!("[{title}]"),
             Bar::Song(i) => l.songs()[*i].path.to_string_lossy().into_owned(),
+            other => format!("{other:?}"),
         })
         .collect()
 }
