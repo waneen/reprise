@@ -109,6 +109,7 @@ fn lwt_01_start(#[case] again: bool, #[case] first: Vec<&str>, #[case] then: Vec
 #[rstest]
 #[case::added("add", vec!["one", "three"])]
 #[case::removed("remove", vec![])]
+#[case::added_to_known_folder("existing", vec!["four", "one"])]
 fn lwt_02_watch(#[case] op: &str, #[case] want: Vec<&str>) {
     let (t, root) = setup();
     let (_, l) = start(&t, &root);
@@ -120,6 +121,7 @@ fn lwt_02_watch(#[case] op: &str, #[case] want: Vec<&str>) {
             std::fs::create_dir_all(root.join("c")).unwrap();
             std::fs::write(root.join("c/3.bms"), "three").unwrap();
         }
+        "existing" => std::fs::write(root.join("a/4.bms"), "four").unwrap(),
         _ => std::fs::remove_dir_all(root.join("a")).unwrap(),
     }
     assert_eq!(wait_for(&l, &want), want);

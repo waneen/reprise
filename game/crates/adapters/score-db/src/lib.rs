@@ -8,6 +8,7 @@
 //! | SDB-02 | 保存した記録は同じ MD5・同じルールで読み戻せる（すべての項目、最小 BP の不明、SHA-256 の有無、出自を含む）。同じ MD5・ルールへの保存は置き換える |
 //! | SDB-03 | MD5 かルールが違えば別の記録。無ければ None |
 //! | SDB-04 | ランプは NoPlay..Max を 0..=10、ルールは LR2 = 0・beatoraja = 1 で保存し、知らない値のランプは NoPlay、知らないルールの行は無いものとする |
+//! | SDB-05 | すべての記録を返す（MD5 の順。知らないルールの行は除く。曲サーバーがまとめて配るため） |
 use application::ports::{PortError, ScoreRepository};
 use domain::chart::ChartHash;
 use domain::play::RulesetId;
@@ -96,6 +97,87 @@ impl SqliteScoreDb {
     }
 }
 
+/// 読む列（`sha256`・ランプ〜クリア回数・`origin`）
+const COLUMNS: &str =
+    "sha256, lamp, pgreat, great, good, bad, poor, maxcombo, minbp, playcount, clearcount, origin";
+
+type Row = (Option<String>, Vec<Option<i64>>, String);
+
+fn read_row(r: &rusqlite::Row) -> rusqlite::Result<Row> {
+    Ok((
+        r.get::<_, Option<String>>(0)?,
+        (1..11)
+            .map(|i| r.get::<_, Option<i64>>(i))
+            .collect::<Result<Vec<_>, _>>()?,
+        r.get::<_, String>(11)?,
+    ))
+}
+
+fn to_record(
+    md5: [u8; 16],
+    ruleset: RulesetId,
+    sha: Option<String>,
+    v: &[Option<i64>],
+    origin: &str,
+) -> ScoreRecord {
+    let n = |x: Option<i64>| x.unwrap_or(0).clamp(0, u32::MAX as i64) as u32;
+    let [lamp, pg, gr, gd, bd, pr, combo, minbp, plays, clears] = v[..] else {
+        unreachable!()
+    };
+    ScoreRecord {
+        chart: ChartHash {
+            md5,
+            sha256: sha.as_deref().and_then(unhex::<32>),
+        },
+        ruleset,
+        lamp: lamp
+            .and_then(|l| usize::try_from(l).ok())
+            .and_then(|l| LAMPS.get(l).copied())
+            .unwrap_or(ClearLamp::NoPlay),
+        ex_score: n(pg) * 2 + n(gr),
+        pgreat: n(pg),
+        great: n(gr),
+        good: n(gd),
+        bad: n(bd),
+        poor: n(pr),
+        max_combo: n(combo),
+        min_bp: minbp.map(|b| n(Some(b))),
+        play_count: n(plays),
+        clear_count: n(clears),
+        origin: origin_of(origin),
+    }
+}
+
+impl SqliteScoreDb {
+    /// SDB-05: すべての記録
+    pub fn all(&self) -> Result<Vec<ScoreRecord>, PortError> {
+        let mut st = self
+            .db
+            .prepare(&format!(
+                "SELECT {COLUMNS}, md5, ruleset FROM score ORDER BY md5, ruleset"
+            ))
+            .map_err(io)?;
+        let rows = st
+            .query_map([], |r| {
+                Ok((read_row(r)?, r.get::<_, String>(12)?, r.get::<_, i64>(13)?))
+            })
+            .map_err(io)?;
+        let mut out = vec![];
+        for row in rows {
+            let ((sha, v, origin), md5, ruleset) = row.map_err(io)?;
+            let ruleset = match ruleset {
+                0 => RulesetId::Lr2,
+                1 => RulesetId::Beatoraja,
+                _ => continue,
+            };
+            if let Some(md5) = unhex::<16>(&md5) {
+                out.push(to_record(md5, ruleset, sha, &v, &origin));
+            }
+        }
+        Ok(out)
+    }
+}
+
 impl ScoreRepository for SqliteScoreDb {
     fn find(
         &self,
@@ -105,50 +187,16 @@ impl ScoreRepository for SqliteScoreDb {
         let row = self
             .db
             .query_row(
-                "SELECT sha256, lamp, pgreat, great, good, bad, poor, maxcombo, minbp, playcount, clearcount, origin \
-                 FROM score WHERE md5 = ?1 AND ruleset = ?2",
+                &format!("SELECT {COLUMNS} FROM score WHERE md5 = ?1 AND ruleset = ?2"),
                 params![hex(&chart.md5), ruleset_code(ruleset)],
-                |r| {
-                    Ok((
-                        r.get::<_, Option<String>>(0)?,
-                        (1..11)
-                            .map(|i| r.get::<_, Option<i64>>(i))
-                            .collect::<Result<Vec<_>, _>>()?,
-                        r.get::<_, String>(11)?,
-                    ))
-                },
+                read_row,
             )
             .optional()
             .map_err(io)?;
         let Some((sha, v, origin)) = row else {
             return Ok(None);
         };
-        let n = |x: Option<i64>| x.unwrap_or(0).clamp(0, u32::MAX as i64) as u32;
-        let [lamp, pg, gr, gd, bd, pr, combo, minbp, plays, clears] = v[..] else {
-            unreachable!()
-        };
-        Ok(Some(ScoreRecord {
-            chart: ChartHash {
-                md5: chart.md5,
-                sha256: sha.as_deref().and_then(unhex::<32>),
-            },
-            ruleset,
-            lamp: lamp
-                .and_then(|l| usize::try_from(l).ok())
-                .and_then(|l| LAMPS.get(l).copied())
-                .unwrap_or(ClearLamp::NoPlay),
-            ex_score: n(pg) * 2 + n(gr),
-            pgreat: n(pg),
-            great: n(gr),
-            good: n(gd),
-            bad: n(bd),
-            poor: n(pr),
-            max_combo: n(combo),
-            min_bp: minbp.map(|b| n(Some(b))),
-            play_count: n(plays),
-            clear_count: n(clears),
-            origin: origin_of(&origin),
-        }))
+        Ok(Some(to_record(chart.md5, ruleset, sha, &v, &origin)))
     }
 
     fn save(&mut self, r: ScoreRecord) -> Result<(), PortError> {

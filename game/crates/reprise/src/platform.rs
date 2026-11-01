@@ -4,6 +4,9 @@
 //! ブラウザ版は、ページの JavaScript が選ばれたファイルを `globalThis.repriseFiles`（パス → `Uint8Array` の `Map`）に、
 //! 起動引数（`--songs` と `--skin-root`）を `globalThis.repriseArgs`（文字列の配列）に置いてから起動する（`web/index.html`）。
 //! 設定はネイティブと同じ `config.json` の中身を、ブラウザ版はページの保存領域（`localStorage`）に置く。
+//! ブラウザ版は曲サーバー（`reprise-server`）にもつなげる: ページが `globalThis.repriseServer`（`{ url, token }`）と
+//! `globalThis.repriseHttp(method, target, body)`（同期の HTTP。`{ status, body: Uint8Array }` を返す）を置いて起動すると、
+//! ファイル・曲一覧・記録・カスタムフォルダの SQL をサーバーに頼む（`remote` クレートのポートの実装。ネイティブ版と同じ画面）。
 use application::ports::{
     ChartLoader, FileSystem, LibrarySource, ScoreRepository, SettingsStore, SongQuery, TableSource,
 };
@@ -23,6 +26,10 @@ mod imp {
 
     pub fn args() -> Vec<String> {
         std::env::args().skip(1).collect()
+    }
+    /// ネイティブ版は曲サーバーにつながない（同じポートをこの機械の中で使う）
+    pub fn has_server() -> bool {
+        false
     }
     pub fn file_system() -> Arc<dyn FileSystem> {
         Arc::new(file_system::StdFs)
@@ -81,6 +88,12 @@ mod imp {
             path: data_dir.join("config.json"),
         }))
     }
+    /// 今の時刻（1970 年からの秒）
+    pub fn unix_now() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64)
+    }
     pub fn seed() -> u32 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -107,10 +120,45 @@ mod imp {
     use super::*;
     use application::ports::PortError;
     use file_system::MemFs;
-    use wasm_bindgen::JsCast;
+    use remote::{Remote, RemoteFs, RemoteLibrary, RemoteScores, RemoteSongQuery, Transport};
+    use std::sync::OnceLock;
+    use wasm_bindgen::{JsCast, JsValue};
 
-    fn global(name: &str) -> wasm_bindgen::JsValue {
+    fn global(name: &str) -> JsValue {
         js_sys::Reflect::get(&js_sys::global(), &name.into()).unwrap_or_default()
+    }
+
+    /// ページの `repriseHttp` で送る（同期の XMLHttpRequest。合言葉はページが付ける）
+    struct PageHttp;
+
+    impl Transport for PageHttp {
+        fn request(&self, method: &str, target: &str, body: Option<&[u8]>) -> (u16, Vec<u8>) {
+            let Ok(f) = global("repriseHttp").dyn_into::<js_sys::Function>() else {
+                return (0, vec![]);
+            };
+            let body = body.map_or(JsValue::NULL, |b| js_sys::Uint8Array::from(b).into());
+            let Ok(r) = f.call3(&JsValue::NULL, &method.into(), &target.into(), &body) else {
+                return (0, vec![]);
+            };
+            let get = |k: &str| js_sys::Reflect::get(&r, &k.into()).unwrap_or_default();
+            let status = get("status").as_f64().unwrap_or(0.0) as u16;
+            let bytes = get("body")
+                .dyn_into::<js_sys::Uint8Array>()
+                .map(|a| a.to_vec())
+                .unwrap_or_default();
+            (status, bytes)
+        }
+    }
+
+    /// 曲サーバー（ページが `repriseServer` を置いたときだけ）
+    fn remote() -> Option<Arc<Remote>> {
+        static REMOTE: OnceLock<Option<Arc<Remote>>> = OnceLock::new();
+        REMOTE
+            .get_or_init(|| {
+                let s = global("repriseServer");
+                (!s.is_undefined() && !s.is_null()).then(|| Remote::new(PageHttp))
+            })
+            .clone()
     }
 
     pub fn args() -> Vec<String> {
@@ -119,7 +167,14 @@ mod imp {
             .map(|a| a.iter().filter_map(|v| v.as_string()).collect())
             .unwrap_or_default()
     }
+    /// 曲サーバーにつないだか（つないだら譜面のフォルダは要らない）
+    pub fn has_server() -> bool {
+        remote().is_some()
+    }
     pub fn file_system() -> Arc<dyn FileSystem> {
+        if let Some(r) = remote() {
+            return Arc::new(RemoteFs(r));
+        }
         let mut fs = MemFs::new();
         if let Ok(map) = global("repriseFiles").dyn_into::<js_sys::Map>() {
             map.for_each(&mut |bytes, path| {
@@ -133,27 +188,37 @@ mod imp {
         Arc::new(fs)
     }
     pub fn default_skin_root() -> PathBuf {
-        PathBuf::from("/")
+        // 曲サーバーは LR2 本体のフォルダを `/skin` で配る
+        PathBuf::from(if remote().is_some() { "/skin" } else { "/" })
     }
-    /// 曲一覧: 渡されたファイルから作る（DB も見張りも無い）
+    /// 曲一覧: 曲サーバーにつないだらサーバーの曲一覧（見張りの結果も届く）、それ以外は渡されたファイルから作る
     pub fn library(
         _data_dir: &Path,
         roots: &[PathBuf],
         fs: Arc<dyn FileSystem>,
         loaders: fn() -> Vec<Box<dyn ChartLoader>>,
     ) -> (Library, Option<Box<dyn LibrarySource>>) {
+        if let Some(r) = remote() {
+            return match r.library() {
+                Ok((version, lib)) => {
+                    let feed = RemoteLibrary::new(r, version, js_sys::Date::now);
+                    (lib, Some(Box::new(feed)))
+                }
+                Err(e) => fatal(&format!("曲サーバーから曲一覧をもらえない: {e:?}"), 1),
+            };
+        }
         let lib = application::usecase::scan_library(fs.as_ref(), &loaders(), roots);
         (lib, None)
     }
-    /// ブラウザ版は記録を保存しない
+    /// 記録は曲サーバーに預ける（つないでいなければ保存しない）
     pub fn open_scores(_data_dir: &Path) -> Option<Scores> {
-        None
+        remote().map(|r| Box::new(RemoteScores::new(r)) as Scores)
     }
-    /// ブラウザ版はカスタムフォルダの SQL を引けない（曲の DB が無い）
+    /// カスタムフォルダの SQL は曲サーバーが引く（つないでいなければ引けない。曲の DB が無い）
     pub fn song_query(_data_dir: &Path) -> Option<Box<dyn SongQuery>> {
-        None
+        remote().map(|r| Box::new(RemoteSongQuery(r)) as Box<dyn SongQuery>)
     }
-    /// ブラウザ版は難易度表を取ってこない
+    /// ブラウザ版は難易度表を取ってこない（曲サーバーの曲一覧に入っている）
     pub fn table_source(_data_dir: &Path) -> Option<Arc<dyn TableSource>> {
         None
     }
@@ -200,6 +265,10 @@ mod imp {
             let text = settings_json::render(settings);
             call_storage("setItem", &[SETTINGS_KEY.into(), text.into()]).map(|_| ())
         }
+    }
+    /// 今の時刻（1970 年からの秒。ブラウザでは `SystemTime` が使えない）
+    pub fn unix_now() -> i64 {
+        (js_sys::Date::now() / 1000.0) as i64
     }
     pub fn seed() -> u32 {
         js_sys::Date::now() as u64 as u32

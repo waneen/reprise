@@ -116,3 +116,31 @@ fn sdb_04_codes(
     raw.execute("UPDATE score SET ruleset = 7", []).unwrap();
     assert_eq!(db.find(&hash(1), ruleset).unwrap(), None);
 }
+
+/// SDB-05: すべての記録（保存した (MD5, ルール) → 返る並び。知らないルールの行は除く）
+#[rstest]
+#[case::empty(vec![], vec![])]
+#[case::sorted(vec![(2, RulesetId::Lr2), (1, RulesetId::Beatoraja), (1, RulesetId::Lr2)], vec![(1, RulesetId::Lr2), (1, RulesetId::Beatoraja), (2, RulesetId::Lr2)])]
+fn sdb_05_all(
+    dir: TempDir,
+    #[case] saved: Vec<(u8, RulesetId)>,
+    #[case] want: Vec<(u8, RulesetId)>,
+) {
+    let p = dir.path().join("score.db");
+    let mut db = SqliteScoreDb::open(&p).unwrap();
+    for (n, r) in &saved {
+        db.save(record(*n, *r)).unwrap();
+    }
+    // 知らないルールの行
+    Connection::open(&p)
+        .unwrap()
+        .execute(
+            "INSERT INTO score(md5, ruleset, lamp, pgreat, great, good, bad, poor, maxcombo, playcount, clearcount, origin) \
+             VALUES ('ff', 9, 1, 0, 0, 0, 0, 0, 0, 0, 0, '')",
+            [],
+        )
+        .unwrap();
+    let all = db.all().unwrap();
+    let want: Vec<ScoreRecord> = want.iter().map(|(n, r)| record(*n, *r)).collect();
+    assert_eq!(all, want);
+}

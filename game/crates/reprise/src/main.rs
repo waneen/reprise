@@ -439,7 +439,8 @@ fn main() {
         settings.songs = cli_songs;
     }
     settings.options = settings.options.clamped();
-    if chart_path.is_none() && settings.songs.is_empty() {
+    // 曲サーバーにつないだブラウザ版はサーバーの曲を使う
+    if chart_path.is_none() && settings.songs.is_empty() && !platform::has_server() {
         usage();
     }
     let settings = SettingsRes {
