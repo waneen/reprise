@@ -17,7 +17,25 @@ fn song(path: &str, md5: u8, key_mode: KeyMode, level: i32, difficulty: i32) -> 
         level,
         difficulty,
         key_mode,
+        notes: 100,
     }
+}
+
+/// 絞り込まない（すべての鍵盤数・すべての難易度・ディレクトリ順）
+const ALL: ListFilter = ListFilter {
+    sort: 0,
+    key: 0,
+    difficulty: 0,
+};
+
+fn no_record(_: &ChartHash) -> SortRecord {
+    SortRecord::default()
+}
+
+/// 絞り込まずに開く
+fn open_all(l: &Library, folder: &str) -> Option<Vec<Bar>> {
+    l.open(Path::new(folder), &mut ALL.clone(), &no_record)
+        .map(|x| x.bars)
 }
 
 fn lib(roots: &[&str], folders: &[&str], songs: Vec<SongInfo>) -> Library {
@@ -66,7 +84,7 @@ fn dom_sel_02_open(#[case] folder: &str, #[case] want: Option<Vec<&str>>) {
             song("/packs/p1/s/3.bms", 4, KeyMode::K7, 1, 0),
         ],
     );
-    let got = l.open(Path::new(folder)).map(|b| names(&l, &b));
+    let got = open_all(&l, folder).map(|b| names(&l, &b));
     assert_eq!(got, want.map(|v| v.into_iter().map(String::from).collect()));
 }
 
@@ -79,7 +97,7 @@ fn dom_sel_02_open(#[case] folder: &str, #[case] want: Option<Vec<&str>>) {
 #[case::same_md5_once(vec![song("/r/b/1.bms", 7, KeyMode::K7, 1, 0), song("/r/a/1.bms", 7, KeyMode::K7, 1, 0)], vec!["/r/a/1.bms"])]
 fn dom_sel_03_song_order(#[case] songs: Vec<SongInfo>, #[case] want: Vec<&str>) {
     let l = lib(&["/r"], &[], songs);
-    assert_eq!(names(&l, &l.open(Path::new("/r")).unwrap()), want);
+    assert_eq!(names(&l, &open_all(&l, "/r").unwrap()), want);
 }
 
 /// DOM-SEL-04: カーソル
@@ -107,11 +125,12 @@ fn dom_sel_04_cursor(#[case] moves: &[i32], #[case] cursor: usize, #[case] at: &
         vec![at]
     );
     // 開ける場所なら開いて先頭、譜面は決定、戻ると元の位置
-    match s.decide(&l) {
+    let mut f = ALL;
+    match s.decide(&l, &mut f, &no_record) {
         Decided::Opened => {
             assert_eq!((s.cursor(), s.depth()), (0, 1));
             s.scroll(1);
-            assert_eq!(s.decide(&l), Decided::Song(1));
+            assert_eq!(s.decide(&l, &mut f, &no_record), Decided::Song(1));
             assert!(s.back());
             assert_eq!((s.cursor(), s.depth()), (cursor, 0));
             assert!(!s.back());
@@ -285,4 +304,287 @@ fn dom_sel_11_mouse_button(#[case] frames: Vec<(i64, bool)>, #[case] want: Vec<u
     let mut m = MouseButton::default();
     let got: Vec<u8> = frames.into_iter().map(|(t, d)| m.update(t, d)).collect();
     assert_eq!(got, want);
+}
+
+/// 一覧 /r の譜面を開いた名前と、開いた後の絞り込み
+fn open_with(songs: Vec<SongInfo>, mut f: ListFilter) -> (Vec<String>, ListFilter) {
+    let l = lib(&["/r"], &[], songs);
+    let bars = l
+        .open(Path::new("/r"), &mut f, &no_record)
+        .map(|x| x.bars)
+        .unwrap_or_default();
+    (names(&l, &bars), f)
+}
+
+fn keys(key: i32) -> ListFilter {
+    ListFilter { key, ..ALL }
+}
+
+/// DOM-SEL-12: 鍵盤数の絞り込み（1 つも残らなければ先の鍵盤数へ）
+#[rstest]
+#[case::all(0, vec!["/r/a/5.bms", "/r/a/7.bms", "/r/a/9.bms", "/r/a/14.bms"], 0)]
+#[case::single(1, vec!["/r/a/5.bms", "/r/a/7.bms"], 1)]
+#[case::seven(2, vec!["/r/a/7.bms"], 2)]
+#[case::five(3, vec!["/r/a/5.bms"], 3)]
+#[case::double(4, vec!["/r/a/14.bms"], 4)]
+#[case::fourteen(5, vec!["/r/a/14.bms"], 5)]
+#[case::ten_none_goes_to_nine(6, vec!["/r/a/9.bms"], 7)]
+#[case::nine(7, vec!["/r/a/9.bms"], 7)]
+fn dom_sel_12_key_filter(#[case] key: i32, #[case] want: Vec<&str>, #[case] after: i32) {
+    let songs = vec![
+        song("/r/a/7.bms", 1, KeyMode::K7, 1, 2),
+        song("/r/a/5.bms", 2, KeyMode::K5, 1, 2),
+        song("/r/a/14.bms", 3, KeyMode::K14, 1, 2),
+        song("/r/a/9.bms", 4, KeyMode::K9, 1, 2),
+    ];
+    let (got, f) = open_with(songs, keys(key));
+    assert_eq!(
+        (got, f.key),
+        (want.into_iter().map(String::from).collect(), after)
+    );
+}
+
+/// DOM-SEL-13: BUTTON 10・11・12 は 1 つ先へ回す（最大の次は 0）
+#[rstest]
+#[case::difficulty(FilterKind::Difficulty, 4, 5)]
+#[case::difficulty_wraps(FilterKind::Difficulty, 5, 0)]
+#[case::key(FilterKind::Key, 1, 2)]
+#[case::key_wraps(FilterKind::Key, 7, 0)]
+#[case::sort(FilterKind::Sort, 0, 1)]
+#[case::sort_wraps(FilterKind::Sort, 4, 0)]
+fn dom_sel_13_next(#[case] kind: FilterKind, #[case] from: i32, #[case] want: i32) {
+    let mut f = ListFilter {
+        sort: from,
+        key: from,
+        difficulty: from,
+    };
+    f.next(kind);
+    let got = match kind {
+        FilterKind::Difficulty => f.difficulty,
+        FilterKind::Key => f.key,
+        FilterKind::Sort => f.sort,
+    };
+    assert_eq!(got, want);
+}
+
+/// DOM-SEL-14: 難易度の絞り込み（選んだ難易度の譜面がどこにも無ければ先の難易度へ。無ければすべて）
+#[rstest]
+#[case::all(0, vec!["/r/a/1.bms", "/r/a/2.bms", "/r/a/3.bms", "/r/a/3b.bms", "/r/b/4.bms"], 0)]
+#[case::beginner(1, vec!["/r/a/1.bms", "/r/b/4.bms"], 1)]
+#[case::normal_or_lowest(2, vec!["/r/a/2.bms", "/r/b/4.bms"], 2)]
+#[case::same_difficulty_all(3, vec!["/r/a/3.bms", "/r/a/3b.bms", "/r/b/4.bms"], 3)]
+#[case::highest_below(4, vec!["/r/a/3.bms", "/r/a/3b.bms", "/r/b/4.bms"], 4)]
+#[case::none_goes_to_all(5, vec!["/r/a/1.bms", "/r/a/2.bms", "/r/a/3.bms", "/r/a/3b.bms", "/r/b/4.bms"], 0)]
+fn dom_sel_14_difficulty_filter(#[case] d: i32, #[case] want: Vec<&str>, #[case] after: i32) {
+    let songs = vec![
+        song("/r/a/1.bms", 1, KeyMode::K7, 1, 1),
+        song("/r/a/2.bms", 2, KeyMode::K7, 5, 2),
+        song("/r/a/3.bms", 3, KeyMode::K7, 8, 3),
+        song("/r/a/3b.bms", 4, KeyMode::K7, 9, 3),
+        song("/r/b/4.bms", 5, KeyMode::K7, 12, 4),
+    ];
+    let f = ListFilter {
+        difficulty: d,
+        ..ALL
+    };
+    let (got, f) = open_with(songs, f);
+    assert_eq!(
+        (got, f.difficulty),
+        (want.into_iter().map(String::from).collect(), after)
+    );
+}
+
+/// DOM-SEL-15: 並べ替え（記録は MD5 の 1 バイト目で引く: ランプ, EX スコア）
+#[rstest]
+#[case::directory(0, vec!["/r/a/y.bms", "/r/a/x.bms", "/r/b/z.bms", "/r/b/w.bms"])]
+#[case::level(1, vec!["/r/b/z.bms", "/r/a/y.bms", "/r/a/x.bms", "/r/b/w.bms"])]
+#[case::title(2, vec!["/r/b/z.bms", "/r/b/w.bms", "/r/a/y.bms", "/r/a/x.bms"])]
+#[case::clear(3, vec!["/r/a/y.bms", "/r/b/z.bms", "/r/b/w.bms", "/r/a/x.bms"])]
+#[case::score(4, vec!["/r/a/x.bms", "/r/b/w.bms", "/r/b/z.bms", "/r/a/y.bms"])]
+fn dom_sel_15_sort(#[case] sort: i32, #[case] want: Vec<&str>) {
+    let mut s = vec![
+        song("/r/a/x.bms", 1, KeyMode::K7, 9, 3),
+        song("/r/a/y.bms", 2, KeyMode::K7, 5, 2),
+        song("/r/b/z.bms", 3, KeyMode::K7, 1, 1),
+        song("/r/b/w.bms", 4, KeyMode::K7, 2, 5),
+    ];
+    // 題名: x = "Beta"・y = "beta"（大文字で同じ → レベル順）・z = "alpha"・w = "Alpha"（大文字で同じ → INSANE は後ろ）
+    for (i, t) in ["Beta", "beta", "alpha", "Alpha"].iter().enumerate() {
+        s[i].title = t.to_string();
+    }
+    let rec = |h: &ChartHash| match h.md5[0] {
+        1 => SortRecord {
+            clear: 5,
+            ex_score: 10,
+        },
+        2 => SortRecord {
+            clear: 1,
+            ex_score: 150,
+        },
+        3 => SortRecord {
+            clear: 3,
+            ex_score: 100,
+        },
+        _ => SortRecord {
+            clear: 3,
+            ex_score: 50,
+        },
+    };
+    let l = lib(&["/r"], &[], s);
+    let mut f = ListFilter { sort, ..ALL };
+    let bars = l.open(Path::new("/r"), &mut f, &rec).unwrap().bars;
+    assert_eq!(names(&l, &bars), want);
+}
+
+/// DOM-SEL-16: → と SELECT の難易度の替え方（今の絞り込み, 曲の難易度, 単位の難易度ごとの数）
+#[rstest]
+#[case::next_higher(0, 2, [1, 1, 0, 1, 0], 4)]
+#[case::from_filtered(4, 2, [1, 1, 1, 0, 0], 3)]
+#[case::top_from_all_goes_lowest(0, 4, [0, 1, 0, 1, 0], 2)]
+#[case::top_from_filter_goes_all(2, 4, [0, 1, 0, 1, 0], 0)]
+#[case::insane_has_no_next(3, 5, [1, 0, 0, 0, 1], 0)]
+#[case::same_difficulty_twice_goes_next(0, 3, [0, 0, 2, 1, 0], 4)]
+fn dom_sel_16_next_difficulty(
+    #[case] filter: i32,
+    #[case] d: i32,
+    #[case] exist: [i32; 5],
+    #[case] want: i32,
+) {
+    let g = Group { count: 0, exist };
+    assert_eq!(filter::next_difficulty(filter, d, &g), want);
+}
+
+/// DOM-SEL-17: `#DIFFICULTY` の無い譜面の難易度（パス, 鍵盤数, ノーツ数, 難易度）
+#[rstest]
+#[case::first_is_normal(vec![("/r/a/1.bms", KeyMode::K7, 100, -1)], vec![2])]
+#[case::by_notes(vec![("/r/a/1.bms", KeyMode::K7, 900, -1), ("/r/a/2.bms", KeyMode::K7, 300, -1), ("/r/a/3.bms", KeyMode::K7, 600, -1)], vec![4, 2, 3])]
+#[case::never_insane(vec![("/r/a/1.bms", KeyMode::K7, 1, -1), ("/r/a/2.bms", KeyMode::K7, 2, -1), ("/r/a/3.bms", KeyMode::K7, 3, -1), ("/r/a/4.bms", KeyMode::K7, 4, -1)], vec![2, 3, 4, 4])]
+#[case::after_defined(vec![("/r/a/1.bms", KeyMode::K7, 1, 1), ("/r/a/2.bms", KeyMode::K7, 2, -1), ("/r/a/3.bms", KeyMode::K7, 3, 5), ("/r/a/4.bms", KeyMode::K7, 4, -1)], vec![1, 2, 5, 5])]
+#[case::other_key_mode_restarts(vec![("/r/a/1.bms", KeyMode::K7, 1, 3), ("/r/a/2.bms", KeyMode::K14, 2, -1)], vec![3, 2])]
+#[case::other_folder_restarts(vec![("/r/a/1.bms", KeyMode::K7, 1, 3), ("/r/b/2.bms", KeyMode::K7, 2, -1)], vec![3, 2])]
+#[case::zero_is_defined(vec![("/r/a/1.bms", KeyMode::K7, 1, 0)], vec![0])]
+fn dom_sel_17_undefined_difficulty(
+    #[case] songs: Vec<(&str, KeyMode, u32, i32)>,
+    #[case] want: Vec<i32>,
+) {
+    let songs = songs
+        .into_iter()
+        .enumerate()
+        .map(|(i, (p, km, n, d))| SongInfo {
+            notes: n,
+            ..song(p, i as u8, km, 1, d)
+        })
+        .collect();
+    let l = lib(&["/r"], &[], songs);
+    let got: Vec<i32> = l.songs().iter().map(|s| s.difficulty).collect();
+    assert_eq!(got, want);
+}
+
+fn h(b: u8) -> ChartHash {
+    ChartHash {
+        md5: [b; 16],
+        sha256: None,
+    }
+}
+
+/// DOM-SEL-18: プレビュー音（フレームごとの (タイマー 11 の経過, 選んでいる曲の MD5)）
+#[rstest]
+#[case::waits_500ms(vec![(Some(499), Some(1)), (Some(500), Some(1))], vec![PreviewAction::None, PreviewAction::Start(1)])]
+#[case::not_for_folder(vec![(Some(900), None)], vec![PreviewAction::None])]
+#[case::timer_stopped(vec![(None, Some(1))], vec![PreviewAction::None])]
+#[case::plays_once(vec![(Some(500), Some(1)), (Some(9000), Some(1))], vec![PreviewAction::Start(1), PreviewAction::None])]
+#[case::stops_on_change(vec![(Some(500), Some(1)), (Some(0), Some(2)), (Some(499), Some(2)), (Some(500), Some(2))], vec![PreviewAction::Start(1), PreviewAction::Stop, PreviewAction::None, PreviewAction::Start(2)])]
+#[case::stops_on_folder(vec![(Some(500), Some(1)), (Some(0), None), (Some(900), None)], vec![PreviewAction::Start(1), PreviewAction::Stop, PreviewAction::None])]
+fn dom_sel_18_preview(
+    #[case] frames: Vec<(Option<i64>, Option<u8>)>,
+    #[case] want: Vec<PreviewAction>,
+) {
+    let mut p = Preview::default();
+    let got: Vec<PreviewAction> = frames
+        .into_iter()
+        .map(|(t, c)| p.update(t, c.map(|b| (b as usize, h(b)))))
+        .collect();
+    assert_eq!(got, want);
+}
+
+/// DOM-SEL-19: パネル 1（フレームごとの (START を押した, 離した)）
+#[rstest]
+#[case::hold_opens_release_closes(vec![(true, false), (false, false), (false, true)], vec![Some(PanelChange::Opened), None, Some(PanelChange::Closed)], false)]
+#[case::press_again_closes(vec![(true, false), (true, false)], vec![Some(PanelChange::Opened), Some(PanelChange::Closed)], false)]
+#[case::release_while_closed(vec![(false, true)], vec![None], false)]
+#[case::stays_open(vec![(true, false)], vec![Some(PanelChange::Opened)], true)]
+fn dom_sel_19_panel(
+    #[case] frames: Vec<(bool, bool)>,
+    #[case] want: Vec<Option<PanelChange>>,
+    #[case] open: bool,
+) {
+    let mut p = Panel::default();
+    let got: Vec<_> = frames.into_iter().map(|(a, b)| p.update(a, b)).collect();
+    assert_eq!((got, p.is_open()), (want, open));
+}
+
+/// DOM-SEL-20: 絞り込みを替えた後のカーソル（開いて選んだ譜面, 替えた後の絞り込み, 鍵盤数を替えたか → 選ぶ譜面）
+#[rstest]
+#[case::same_path(ALL, "/r/b/2.bms", ListFilter { difficulty: 2, ..ALL }, false, "/r/b/2.bms")]
+#[case::same_folder_first(ALL, "/r/a/1.bms", ListFilter { difficulty: 3, ..ALL }, false, "/r/a/3.bms")]
+#[case::key_changed_same_folder(ALL, "/r/a/5.bms", keys(2), true, "/r/a/1.bms")]
+#[case::otherwise_top(ALL, "/r/a/5.bms", keys(2), false, "/r/a/1.bms")]
+#[case::otherwise_top_b(ListFilter { sort: 2, ..ALL }, "/r/a/5.bms", ListFilter { sort: 2, key: 2, difficulty: 0 }, false, "/r/b/2.bms")]
+fn dom_sel_20_refilter_cursor(
+    #[case] first: ListFilter,
+    #[case] at: &str,
+    #[case] then: ListFilter,
+    #[case] key_changed: bool,
+    #[case] want: &str,
+) {
+    let mut songs = vec![
+        song("/r/a/1.bms", 1, KeyMode::K7, 1, 1),
+        song("/r/a/2.bms", 2, KeyMode::K7, 5, 2),
+        song("/r/a/3.bms", 3, KeyMode::K7, 8, 3),
+        song("/r/a/5.bms", 4, KeyMode::K5, 3, 2),
+        song("/r/b/2.bms", 5, KeyMode::K7, 4, 2),
+    ];
+    // 題名順では /r/b/2.bms が先頭
+    for (i, t) in ["m", "n", "o", "p", "a"].iter().enumerate() {
+        songs[i].title = t.to_string();
+    }
+    let l = lib(&["/r"], &[], songs);
+    let mut s = SelectState::new(&l);
+    let mut f = first;
+    assert_eq!(s.decide(&l, &mut f, &no_record), Decided::Opened);
+    while names(&l, std::slice::from_ref(s.current().unwrap())) != vec![at] {
+        s.scroll(1);
+    }
+    let mut f = then;
+    s.refilter(&l, &mut f, &no_record, key_changed);
+    assert_eq!(
+        names(&l, std::slice::from_ref(s.current().unwrap())),
+        vec![want]
+    );
+}
+
+/// DOM-SEL-21: → と SELECT は曲を選んでいるときだけ難易度を替えて一覧を作り直す
+#[rstest]
+#[case::folder_does_nothing(false, None)]
+#[case::song_reloads(true, Some((4, vec!["/r/a/2.bms"])))]
+fn dom_sel_21_change_difficulty(#[case] open: bool, #[case] want: Option<(i32, Vec<&str>)>) {
+    let l = lib(
+        &["/r"],
+        &[],
+        vec![
+            song("/r/a/1.bms", 1, KeyMode::K7, 1, 2),
+            song("/r/a/2.bms", 2, KeyMode::K7, 5, 4),
+        ],
+    );
+    let mut s = SelectState::new(&l);
+    let mut f = ALL;
+    if open {
+        s.decide(&l, &mut f, &no_record);
+    }
+    let changed = s.change_difficulty(&l, &mut f, &no_record);
+    let got = changed.then(|| (f.difficulty, names(&l, s.bars())));
+    assert_eq!(
+        got,
+        want.map(|(d, v)| (d, v.into_iter().map(String::from).collect()))
+    );
 }

@@ -12,6 +12,7 @@
 mod input;
 mod keyconfig_scene;
 mod platform;
+mod preview;
 mod result_scene;
 mod select_scene;
 mod skin_render;
@@ -21,6 +22,7 @@ use application::play_options::{ControlInput, PlayOptions};
 use application::play_skin::{PlaySkin, QuitInput};
 use application::ports::{AudioOutput, ChartLoader, FileSystem, SkinLoader};
 use application::result_skin::{after_play, AfterPlay};
+use application::select_skin::OptionNames;
 use application::settings::Settings;
 use application::usecase::SavedScore;
 use bevy::audio::AudioSource;
@@ -205,7 +207,7 @@ fn decodable(bytes: &Arc<[u8]>) -> bool {
 }
 
 /// 読み込んだ音（ID とファイルの中身）
-type Sounds = Vec<(SoundId, Arc<[u8]>)>;
+pub(crate) type Sounds = Vec<(SoundId, Arc<[u8]>)>;
 
 /// 音の長さ（ms）。分からなければ 0
 fn sound_ms(bytes: &Arc<[u8]>) -> i64 {
@@ -245,7 +247,7 @@ fn load_bga(fs: &dyn FileSystem, chart: &Chart, chart_path: &Path) -> Vec<(Image
 }
 
 /// 譜面と音を読み込む（`seed` は `#RANDOM` の乱数の種）
-fn load(fs: &dyn FileSystem, path: &Path, seed: u32) -> Result<(Chart, Sounds), String> {
+pub(crate) fn load(fs: &dyn FileSystem, path: &Path, seed: u32) -> Result<(Chart, Sounds), String> {
     let bytes = fs.read(path).map_err(|e| format!("{e:?}"))?;
     let (chart, _) = application::usecase::load_chart(&chart_loaders(), path, &bytes, seed)
         .map_err(|e| format!("譜面を読めない: {e:?}"))?;
@@ -296,7 +298,7 @@ pub struct PlayRequest {
 /// 起動時に決めたこと（どのプレイにも使う）
 #[derive(Resource)]
 pub struct Boot {
-    fs: Arc<dyn FileSystem>,
+    pub(crate) fs: Arc<dyn FileSystem>,
     gauge: GaugeType,
     options: PlayOptions,
     skin_path: Option<PathBuf>,
@@ -340,6 +342,21 @@ pub fn list_font() -> FontSource {
         TextFont::default().font
     } else {
         FontSource::SansSerif
+    }
+}
+
+/// LR2 本体の `LR2files/Config/optionstr.csv`（選曲スキンの文字列 60..62 の名前。無ければ空）
+fn option_names(fs: &dyn FileSystem, root: &Path) -> OptionNames {
+    let path = root.join("LR2files").join("Config").join("optionstr.csv");
+    let Ok(bytes) = fs.read(&path) else {
+        return OptionNames::default();
+    };
+    let m = reprise_skin_lr2csv::optionstr::parse_option_strings(&bytes);
+    let get = |k: &str| m.get(k).cloned().unwrap_or_default();
+    OptionNames {
+        mode: get("#MODE"),
+        sort: get("#SORT"),
+        difficulty: get("#DIFFICULTY"),
     }
 }
 
@@ -441,6 +458,8 @@ fn main() {
         direct,
     };
     let input_map = input::InputMap::new(s.bindings.clone());
+    let s_select = s.select;
+    let option_names = option_names(boot.fs.as_ref(), &boot.skin_root);
     // 選曲スキン（読めなければ文字の一覧）
     let select_skin = match (&s.select_skin, direct) {
         (Some(p), false) => load_skin(
@@ -501,12 +520,19 @@ fn main() {
     .insert_resource(input_map)
     .init_resource::<input::SlotInput>()
     .insert_resource(scores)
-    .insert_resource(select_scene::Selection::new(library, select_skin))
+    .insert_resource(select_scene::Selection::new(
+        library,
+        select_skin,
+        s_select,
+        option_names,
+    ))
+    .init_resource::<preview::PreviewPlayer>()
     .add_systems(
         PreUpdate,
         input::read_input.after(bevy::input::InputSystems),
     )
     .add_systems(OnEnter(Scene::Select), select_scene::enter)
+    .add_systems(OnExit(Scene::Select), preview::exit)
     .add_systems(
         Update,
         (
@@ -516,7 +542,9 @@ fn main() {
             (select_scene::skin_input, select_scene::draw_skin)
                 .chain()
                 .run_if(|s: Res<select_scene::Selection>| s.has_skin()),
+            select_scene::preview,
         )
+            .chain()
             .run_if(in_state(Scene::Select)),
     )
     .add_systems(OnEnter(Scene::KeyConfig), keyconfig_scene::enter)

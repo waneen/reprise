@@ -1,7 +1,11 @@
 //! 選曲（LR2 の曲一覧）。フォルダと譜面の木から、開いたフォルダのバーの並びを作り、カーソルを動かす。
 //! 譜面の走査は外側（application）で行い、ここには結果だけが入る。
+pub mod filter;
+pub mod preview;
+
 use crate::chart::{ChartHash, KeyMode};
-use std::cmp::Ordering;
+pub use filter::{FilterKind, Group, ListFilter, SortRecord};
+pub use preview::{Panel, PanelChange, Preview, PreviewAction};
 use std::path::{Path, PathBuf};
 
 /// 選曲に出す譜面の情報
@@ -15,9 +19,11 @@ pub struct SongInfo {
     pub genre: String,
     /// `#PLAYLEVEL`（無ければ 0）
     pub level: i32,
-    /// `#DIFFICULTY`（無ければ 0）
+    /// `#DIFFICULTY`（無ければ −1。[`Library::new`] で LR2 と同じく付ける）
     pub difficulty: i32,
     pub key_mode: KeyMode,
+    /// ノーツ数（`#DIFFICULTY` の無い譜面の難易度の付け方・スコア順に使う）
+    pub notes: u32,
 }
 
 /// 譜面の置き場所（登録したフォルダ・その中のすべてのフォルダ・譜面）
@@ -63,8 +69,10 @@ fn folder_bars<'a>(paths: impl Iterator<Item = &'a PathBuf>) -> Vec<Bar> {
 }
 
 impl Library {
-    /// `folders` は登録したフォルダの中にあるすべてのフォルダ（登録したフォルダ自身は含めなくてよい）
-    pub fn new(roots: Vec<PathBuf>, folders: Vec<PathBuf>, songs: Vec<SongInfo>) -> Self {
+    /// `folders` は登録したフォルダの中にあるすべてのフォルダ（登録したフォルダ自身は含めなくてよい）。
+    /// `#DIFFICULTY` の無い譜面には難易度を付ける（DOM-SEL-17）
+    pub fn new(roots: Vec<PathBuf>, folders: Vec<PathBuf>, mut songs: Vec<SongInfo>) -> Self {
+        filter::assign_undefined_difficulty(&mut songs);
         Self {
             roots,
             folders,
@@ -80,37 +88,51 @@ impl Library {
         folder_bars(self.roots.iter())
     }
 
-    /// フォルダを開いた一覧（DOM-SEL-02, 03）。開けなければ None
-    pub fn open(&self, folder: &Path) -> Option<Vec<Bar>> {
+    /// フォルダを開いた一覧（DOM-SEL-02, 03, 12..15）。開けなければ None。
+    /// 譜面は `filter` で絞り込んで並べ（絞り込みを先へ回したら `filter` を書き換える）、`record` は並べ替えに使う記録を引く
+    pub fn open(
+        &self,
+        folder: &Path,
+        filter: &mut ListFilter,
+        record: &dyn Fn(&ChartHash) -> SortRecord,
+    ) -> Option<Listing> {
         let song_dir = |s: &SongInfo| s.path.parent().map(Path::to_path_buf).unwrap_or_default();
-        let mut songs: Vec<usize> = (0..self.songs.len())
+        let songs: Vec<usize> = (0..self.songs.len())
             .filter(|&i| song_dir(&self.songs[i]).parent() == Some(folder))
             .collect();
         if !songs.is_empty() {
-            // 同じ譜面（MD5）はパス順で最初の 1 つ
-            songs.sort_by_key(|&i| upper(&self.songs[i].path));
-            let mut seen = std::collections::HashSet::new();
-            songs.retain(|&i| seen.insert(self.songs[i].hash));
-            songs.sort_by(|&a, &b| self.cmp_by_directory(a, b));
-            return Some(songs.into_iter().map(Bar::Song).collect());
+            let listed = filter::list_songs(&self.songs, &songs, filter, record);
+            return (!listed.is_empty()).then(|| Listing {
+                bars: listed.iter().map(|(i, _)| Bar::Song(*i)).collect(),
+                groups: listed.iter().map(|(_, g)| Some(*g)).collect(),
+            });
         }
         let subs = folder_bars(self.folders.iter().filter(|p| p.parent() == Some(folder)));
-        (!subs.is_empty()).then_some(subs)
+        (!subs.is_empty()).then(|| Listing::folders(subs))
     }
 
-    /// LR2 の `CMP_SongDataByDirectory`: 譜面のフォルダ → 鍵盤数 → レベル（`#DIFFICULTY` 5 は +100）。同点はパス順
-    fn cmp_by_directory(&self, a: usize, b: usize) -> Ordering {
-        let key = |s: &SongInfo| {
-            (
-                upper(s.path.parent().unwrap_or(Path::new(""))),
-                s.key_mode,
-                s.level + if s.difficulty == 5 { 100 } else { 0 },
-            )
-        };
-        let (sa, sb) = (&self.songs[a], &self.songs[b]);
-        key(sa)
-            .cmp(&key(sb))
-            .then_with(|| upper(&sa.path).cmp(&upper(&sb.path)))
+    /// バーのパス（曲は譜面、フォルダはフォルダ。LR2 の `filepath`）
+    fn bar_path<'a>(&'a self, bar: &'a Bar) -> &'a Path {
+        match bar {
+            Bar::Folder { path, .. } => path,
+            Bar::Song(i) => &self.songs[*i].path,
+        }
+    }
+}
+
+/// 一覧（バーと、曲なら難易度の絞り込みの単位の中での情報）
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Listing {
+    pub bars: Vec<Bar>,
+    pub groups: Vec<Option<Group>>,
+}
+
+impl Listing {
+    fn folders(bars: Vec<Bar>) -> Self {
+        Self {
+            groups: vec![None; bars.len()],
+            bars,
+        }
     }
 }
 
@@ -128,32 +150,36 @@ pub enum Decided {
 /// 選曲の状態（DOM-SEL-04）
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectState {
-    bars: Vec<Bar>,
+    list: Listing,
     cursor: usize,
-    /// 開く前の一覧とカーソル
-    stack: Vec<(Vec<Bar>, usize)>,
+    /// 開く前の一覧とカーソルと開いたフォルダ
+    stack: Vec<(Listing, usize, PathBuf)>,
 }
 
 impl SelectState {
     pub fn new(library: &Library) -> Self {
         Self {
-            bars: library.root_bars(),
+            list: Listing::folders(library.root_bars()),
             cursor: 0,
             stack: vec![],
         }
     }
     pub fn bars(&self) -> &[Bar] {
-        &self.bars
+        &self.list.bars
     }
     pub fn cursor(&self) -> usize {
         self.cursor
     }
     pub fn current(&self) -> Option<&Bar> {
-        self.bars.get(self.cursor)
+        self.list.bars.get(self.cursor)
+    }
+    /// 選んでいる曲の難易度の絞り込みの単位の中での情報
+    pub fn current_group(&self) -> Option<&Group> {
+        self.list.groups.get(self.cursor)?.as_ref()
     }
     /// カーソルを置く（一覧の本数で回す。選曲スキンの一覧の動き [`BarScroll`] から決める）
     pub fn set_cursor(&mut self, cursor: usize) {
-        let n = self.bars.len();
+        let n = self.list.bars.len();
         self.cursor = if n == 0 { 0 } else { cursor % n };
     }
     /// 開いているフォルダの深さ（最初の一覧は 0）
@@ -162,36 +188,119 @@ impl SelectState {
     }
     /// カーソルを動かす（端で反対側へ回る）
     pub fn scroll(&mut self, delta: i32) {
-        let n = self.bars.len() as i64;
+        let n = self.list.bars.len() as i64;
         if n > 0 {
             self.cursor = (self.cursor as i64 + delta as i64).rem_euclid(n) as usize;
         }
     }
-    pub fn decide(&mut self, library: &Library) -> Decided {
+    pub fn decide(
+        &mut self,
+        library: &Library,
+        filter: &mut ListFilter,
+        record: &dyn Fn(&ChartHash) -> SortRecord,
+    ) -> Decided {
         match self.current() {
             Some(Bar::Song(i)) => Decided::Song(*i),
-            Some(Bar::Folder { path, .. }) => match library.open(path) {
-                Some(bars) => {
-                    let prev = std::mem::replace(&mut self.bars, bars);
-                    self.stack.push((prev, self.cursor));
-                    self.cursor = 0;
-                    Decided::Opened
+            Some(Bar::Folder { path, .. }) => {
+                let path = path.clone();
+                match library.open(&path, filter, record) {
+                    Some(list) => {
+                        let prev = std::mem::replace(&mut self.list, list);
+                        self.stack.push((prev, self.cursor, path));
+                        self.cursor = 0;
+                        Decided::Opened
+                    }
+                    None => Decided::Nothing,
                 }
-                None => Decided::Nothing,
-            },
+            }
             None => Decided::Nothing,
         }
     }
     /// 1 つ上の一覧へ戻る（最初の一覧なら false）
     pub fn back(&mut self) -> bool {
         match self.stack.pop() {
-            Some((bars, cursor)) => {
-                self.bars = bars;
+            Some((list, cursor, _)) => {
+                self.list = list;
                 self.cursor = cursor;
                 true
             }
             None => false,
         }
+    }
+
+    /// DOM-SEL-20: 絞り込み・並べ替えを替えたので今の一覧を作り直す（LR2 `SetBmsFilter` → `InitSelectBySearchResult`）。
+    /// カーソルは 同じパスのバー → 同じ譜面のフォルダと鍵盤数で同じ難易度の 1 つ目の譜面 →（鍵盤数を替えたなら）同じ譜面のフォルダの
+    /// 同じ難易度の 1 つ目の譜面 → 先頭 の順に探す
+    pub fn refilter(
+        &mut self,
+        library: &Library,
+        filter: &mut ListFilter,
+        record: &dyn Fn(&ChartHash) -> SortRecord,
+        key_changed: bool,
+    ) {
+        let list = match self.stack.last() {
+            None => Listing::folders(library.root_bars()),
+            Some((_, _, folder)) => match library.open(folder, filter, record) {
+                Some(l) => l,
+                None => return,
+            },
+        };
+        let selected = self.current().map(|b| match b {
+            Bar::Song(i) => {
+                let s = &library.songs()[*i];
+                (
+                    s.path.clone(),
+                    Some((s.path.parent().map(Path::to_path_buf), s.key_mode)),
+                )
+            }
+            Bar::Folder { path, .. } => (path.clone(), None),
+        });
+        self.list = list;
+        let Some((path, song)) = selected else {
+            self.cursor = 0;
+            return;
+        };
+        let first_of = |want: &dyn Fn(&SongInfo) -> bool| {
+            self.list
+                .bars
+                .iter()
+                .zip(&self.list.groups)
+                .position(|(b, g)| match (b, g) {
+                    (Bar::Song(i), Some(g)) => g.count == 0 && want(&library.songs()[*i]),
+                    _ => false,
+                })
+        };
+        let dir = |s: &SongInfo| s.path.parent().map(Path::to_path_buf);
+        let found = self
+            .list
+            .bars
+            .iter()
+            .position(|b| library.bar_path(b) == path)
+            .or_else(|| {
+                let (d, km) = song.clone()?;
+                first_of(&|s| dir(s) == d && s.key_mode == km)
+            })
+            .or_else(|| {
+                let (d, _) = song.clone()?;
+                key_changed.then(|| first_of(&|s| dir(s) == d)).flatten()
+            });
+        self.cursor = found.unwrap_or(0);
+    }
+
+    /// DOM-SEL-16: → か SELECT（選んでいるのが曲のとき）。難易度の絞り込みを替えて一覧を作り直す。曲でなければ false
+    pub fn change_difficulty(
+        &mut self,
+        library: &Library,
+        filter: &mut ListFilter,
+        record: &dyn Fn(&ChartHash) -> SortRecord,
+    ) -> bool {
+        let (Some(Bar::Song(i)), Some(g)) = (self.current(), self.current_group()) else {
+            return false;
+        };
+        filter.difficulty =
+            filter::next_difficulty(filter.difficulty, library.songs()[*i].difficulty, g);
+        self.refilter(library, filter, record, false);
+        true
     }
 }
 

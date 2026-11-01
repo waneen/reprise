@@ -12,6 +12,7 @@
 //! | SJS-07 | 操作の割り当ては `keys` に操作の名前（2P は `p2_` を付ける）ごとの配列で、配列の位置が割り当ての位置（LR2 の 16 か所。空いた位置は null。16 番目より後は無視） |
 //! | SJS-08 | リザルトスキンは `result_skin`（パス。null・無しは None） |
 //! | SJS-09 | スキン設定の選択は `skin_custom` に スキンのパス → { 項目名: 選んだ名前（文字列）}（無しは空） |
+//! | SJS-10 | 選曲の並べ替え・絞り込みは `select_sort`（0..4）・`select_key`（0..7）・`select_difficulty`（0..5）、プレビュー音は `preview`（真偽）。範囲の外は既定（0・1・0）、無しは既定（プレビュー音は鳴らす） |
 use application::ports::{PortError, SettingsStore};
 use application::settings::Settings;
 use domain::input::{Side, Source, PLACES, SLOTS};
@@ -134,6 +135,10 @@ pub fn to_json(s: &Settings) -> Value {
         "analog_scratch_ms": s.bindings.analog_scratch_ms,
         "keys": keys,
         "skin_custom": s.skin_custom,
+        "select_sort": s.select.sort,
+        "select_key": s.select.key,
+        "select_difficulty": s.select.difficulty,
+        "preview": s.preview,
     })
 }
 
@@ -164,6 +169,10 @@ pub fn from_json(v: &Value) -> Result<Settings, PortError> {
             "lane_cover" => s.options.lane_cover = v.as_bool().ok_or_else(|| err("lane_cover"))?,
             "cover" => s.options.cover = int(v, "cover")?,
             "judge_offset" => s.options.judge_offset = int(v, "judge_offset")?,
+            "select_sort" => s.select.sort = int(v, "select_sort")?,
+            "select_key" => s.select.key = int(v, "select_key")?,
+            "select_difficulty" => s.select.difficulty = int(v, "select_difficulty")?,
+            "preview" => s.preview = v.as_bool().ok_or_else(|| err("preview"))?,
             "analog_scratch_ms" if !v.is_null() => {
                 s.bindings.analog_scratch_ms =
                     Some(v.as_u64().ok_or_else(|| err("analog_scratch_ms"))? as u32)
@@ -202,6 +211,7 @@ pub fn from_json(v: &Value) -> Result<Settings, PortError> {
         }
     }
     s.options = s.options.clamped();
+    s.select = s.select.clamped();
     Ok(s)
 }
 

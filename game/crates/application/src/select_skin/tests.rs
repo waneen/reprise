@@ -2,7 +2,7 @@
 use super::*;
 use domain::chart::ChartHash;
 use domain::play::RulesetId;
-use domain::select::SongInfo;
+use domain::select::{ListFilter, SongInfo};
 use rstest::rstest;
 use std::path::PathBuf;
 
@@ -20,6 +20,7 @@ fn song(title: &str, subtitle: &str, key_mode: KeyMode, level: i32, difficulty: 
         level,
         difficulty,
         key_mode,
+        notes: 100,
     }
 }
 
@@ -105,10 +106,10 @@ fn app_sel_02_timers(#[case] frames: Vec<(i64, bool, bool)>, #[case] want: [Opti
 
 /// APP-SEL-03: 条件
 #[rstest]
-#[case::song_7k(Some(song("T", "", KeyMode::K7, 12, 2)), Some(record(ClearLamp::Easy)), vec![2, 5, 20, 50, 52, 102, 152, 160, 185, 900])]
-#[case::song_high_level(Some(song("T", "", KeyMode::K7, 13, 0)), None, vec![2, 5, 20, 50, 52, 100, 150, 160, 186, 900])]
-#[case::song_5k(Some(song("T", "", KeyMode::K5, 10, 6)), None, vec![2, 5, 20, 50, 52, 100, 161, 186, 900])]
-#[case::folder(None, None, vec![1, 20, 50, 52, 150, 900])]
+#[case::song_7k(Some(song("T", "", KeyMode::K7, 12, 2)), Some(record(ClearLamp::Easy)), vec![2, 5, 20, 46, 50, 52, 102, 152, 160, 185, 900])]
+#[case::song_high_level(Some(song("T", "", KeyMode::K7, 13, 0)), None, vec![2, 5, 20, 46, 50, 52, 100, 150, 160, 186, 900])]
+#[case::song_5k_undefined_difficulty(Some(song("T", "", KeyMode::K5, 10, 6)), None, vec![2, 5, 20, 46, 50, 52, 100, 152, 161, 186, 900])]
+#[case::folder(None, None, vec![1, 20, 46, 50, 52, 150, 900])]
 fn app_sel_03_options(
     #[case] info: Option<SongInfo>,
     #[case] rec: Option<ScoreRecord>,
@@ -158,15 +159,74 @@ fn app_sel_05_list_slider(#[case] position: i64, #[case] n: usize, #[case] want:
     assert_eq!(s.slider(1), want);
 }
 
-/// APP-SEL-06: BUTTON の状態値
+/// APP-SEL-06: BUTTON の状態値（絞り込みは 難易度 3・鍵盤数 5・並べ替え 2）
 #[rstest]
 #[case::panel(1, Some(0))]
-#[case::filter(10, Some(0))]
+#[case::difficulty(10, Some(3))]
+#[case::key(11, Some(5))]
+#[case::sort(12, Some(2))]
 #[case::key_config(13, Some(0))]
 #[case::replay(19, Some(0))]
 #[case::fx(20, None)]
 #[case::none(9, None)]
 fn app_sel_06_buttons(#[case] action: i32, #[case] want: Option<i32>) {
-    let s = SelectSkin::new(SceneTiming::default(), &[], PlayOptions::default());
+    let mut s = SelectSkin::new(SceneTiming::default(), &[], PlayOptions::default());
+    let f = ListFilter {
+        sort: 2,
+        key: 5,
+        difficulty: 3,
+    };
+    s.set_filter(f, &OptionNames::default());
     assert_eq!(s.button(action), want);
+}
+
+fn names3() -> OptionNames {
+    let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect();
+    OptionNames {
+        mode: v(&["ALL", "SINGLE", "7K", "5K", "DOUBLE", "14K", "10K", "9K"]),
+        sort: v(&["DIR", "LEVEL", "TITLE", "CLEAR", ""]),
+        difficulty: v(&["ALL", "BEG", "NOR", "HYP", "ANO", "INS"]),
+    }
+}
+
+/// APP-SEL-07: 絞り込みの文字列 60..62 と条件 10/12（(並べ替え, 鍵盤数, 難易度) → 60, 61, 62, 条件 10）
+#[rstest]
+#[case::default((0, 1, 0), [Some("SINGLE"), Some("LEVEL"), Some("ALL")], false)]
+#[case::sort_name_by_key((2, 3, 4), [Some("5K"), Some("CLEAR"), Some("ANO")], false)]
+#[case::empty_name((0, 4, 5), [Some("DOUBLE"), None, Some("INS")], true)]
+#[case::out_of_list((0, 7, 1), [Some("9K"), None, Some("BEG")], false)]
+fn app_sel_07_filter_texts(
+    #[case] f: (i32, i32, i32),
+    #[case] want: [Option<&str>; 3],
+    #[case] double: bool,
+) {
+    let mut s = SelectSkin::new(SceneTiming::default(), &[], PlayOptions::default());
+    let filter = ListFilter {
+        sort: f.0,
+        key: f.1,
+        difficulty: f.2,
+    };
+    s.set_filter(filter, &names3());
+    assert_eq!([s.text(60), s.text(61), s.text(62)], want);
+    assert_eq!((s.option(10), s.option(12)), (double, double));
+}
+
+/// APP-SEL-08: パネル 1 のタイマー 21/31 と条件 20/21（(時刻, 開いたか) の順 → タイマー 21, 31, 条件 20, 21）
+#[rstest]
+#[case::closed(vec![], [None, None], true)]
+#[case::opened(vec![(100, true)], [Some(400), None], false)]
+#[case::closed_again(vec![(100, true), (300, false)], [None, Some(200)], true)]
+fn app_sel_08_panel(
+    #[case] changes: Vec<(i64, bool)>,
+    #[case] timers: [Option<i64>; 2],
+    #[case] closed: bool,
+) {
+    let mut s = SelectSkin::new(SceneTiming::default(), &[], PlayOptions::default());
+    for (t, open) in changes {
+        s.update(t, false, false);
+        s.set_panel(open);
+    }
+    s.update(500, false, false);
+    assert_eq!([s.timer(21), s.timer(31)], timers);
+    assert_eq!((s.option(20), s.option(21)), (closed, !closed));
 }

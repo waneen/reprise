@@ -2,11 +2,11 @@
 //! LR2 の番号のタイマー・条件・数値・文字列を作り、`domain::skin::lr2::SkinState` として渡す。
 //! 番号の意味は OpenLR2 の `LR2_skinobject.cpp`（`GetOptionFlag_dst`・`SetObjectValue_Num`・`SetObjectValue_Bargraph`・
 //! `SetObjectValue_Slider`・`SetObjectValue_Button`）・`Scene02_Songselect.cpp`（`ProcS_Select`）・`Main.cpp` を仕様として参照した。
-//! 今あるデータで作れないもの（IR・ライバル・コース・バナー・プレビュー音・BPM・難易度ごとのレベル・追加日時など）は作らない。
+//! 今あるデータで作れないもの（IR・ライバル・コース・バナー・BPM・難易度ごとのレベル・追加日時など）は作らない。
 use crate::play_options::PlayOptions;
 use domain::chart::{ChartHash, KeyMode};
 use domain::score::{ClearLamp, ScoreRecord};
-use domain::select::{Bar, Library};
+use domain::select::{Bar, Library, ListFilter};
 use domain::skin::lr2::{BarView, SkinState};
 use domain::skin::SceneTiming;
 use std::collections::{BTreeMap, BTreeSet};
@@ -130,6 +130,20 @@ pub struct SelectSkin {
     level_bar: f64,
     /// SLIDER 1（一覧の位置）
     list_slider: f64,
+    /// 並べ替え・絞り込み（BUTTON 10..12・文字列 60..62・条件 10/12）
+    filter: ListFilter,
+    /// オプションの名前（`optionstr.csv` の `#MODE`・`#SORT`・`#DIFFICULTY`）
+    names: OptionNames,
+    /// パネル 1 を開いているか
+    panel: bool,
+}
+
+/// オプションの名前（LR2 の `optionstr.csv`。無ければ空）
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OptionNames {
+    pub mode: Vec<String>,
+    pub sort: Vec<String>,
+    pub difficulty: Vec<String>,
 }
 
 impl SelectSkin {
@@ -146,6 +160,9 @@ impl SelectSkin {
             texts: BTreeMap::new(),
             level_bar: 0.0,
             list_slider: 0.0,
+            filter: ListFilter::default(),
+            names: OptionNames::default(),
+            panel: false,
         };
         // APP-SEL-02: 画面の開始でタイマー 0
         s.starts.insert(0, 0);
@@ -173,6 +190,20 @@ impl SelectSkin {
             // LR2 は経過が 0 でなければ（止まっていても）始め直す
             self.starts.insert(10, now_ms);
         }
+    }
+
+    /// APP-SEL-07: 並べ替え・絞り込みとオプションの名前
+    pub fn set_filter(&mut self, filter: ListFilter, names: &OptionNames) {
+        self.filter = filter;
+        self.names = names.clone();
+    }
+
+    /// APP-SEL-08: パネル 1 を開いた（タイマー 21 を始めて 31 を止める）・閉じた（31 を始めて 21 を止める）
+    pub fn set_panel(&mut self, open: bool) {
+        self.panel = open;
+        let (on, off) = if open { (21, 31) } else { (31, 21) };
+        self.starts.insert(on, self.now);
+        self.starts.remove(&off);
     }
 
     /// 選んでいるバーを替えた（フォルダを開いた・戻った）ときのタイマー 11
@@ -287,8 +318,16 @@ impl SkinState for SelectSkin {
         if self.skin_options.contains(&id) || self.ops.contains(&id) {
             return true;
         }
-        // 20 パネルを開いていない（パネルは無い）、50 IR につないでいない、52 EXTRA モードでない
-        matches!(id, 20 | 50 | 52)
+        match id {
+            // 10・12 鍵盤数の絞り込みが DOUBLE・14 鍵・10 鍵（バトルは無い）
+            10 | 12 => (4..=6).contains(&self.filter.key),
+            // 20 パネルを開いていない、21 パネル 1 を開いている
+            20 => !self.panel,
+            21 => self.panel,
+            // 46 難易度の絞り込みを使う（LR2 の既定）、50 IR につないでいない、52 EXTRA モードでない
+            46 | 50 | 52 => true,
+            _ => false,
+        }
     }
 
     /// APP-SEL-04
@@ -320,15 +359,28 @@ impl SkinState for SelectSkin {
         0.0
     }
 
+    /// APP-SEL-04, 07
     fn text(&self, id: i32) -> Option<&str> {
-        self.texts.get(&id).map(String::as_str)
+        // 60 鍵盤数の名前、61 は LR2 と同じく #SORT の名前を鍵盤数の番号で引く、62 難易度の名前（空は無し）
+        fn pick(v: &[String], i: i32) -> Option<&String> {
+            v.get(i as usize).filter(|s| !s.is_empty())
+        }
+        let f = &self.filter;
+        match id {
+            60 => pick(&self.names.mode, f.key).map(String::as_str),
+            61 => pick(&self.names.sort, f.key).map(String::as_str),
+            62 => pick(&self.names.difficulty, f.difficulty).map(String::as_str),
+            _ => self.texts.get(&id).map(String::as_str),
+        }
     }
 
-    /// APP-SEL-06: パネル 1..8 は 0（パネルを開いていない）、絞り込み・並べ替え 10..12 は 0（絞り込まない・ディレクトリ順）、
-    /// 13..19 は 0（LR2 も 0 で描く）
+    /// APP-SEL-06: パネル 1..8 は 0、10 難易度・11 鍵盤数・12 並べ替えの絞り込みの値、13..19 は 0（LR2 も 0 で描く）
     fn button(&self, action: i32) -> Option<i32> {
         match action {
-            1..=8 | 10..=19 => Some(0),
+            10 => Some(self.filter.difficulty),
+            11 => Some(self.filter.key),
+            12 => Some(self.filter.sort),
+            1..=8 | 13..=19 => Some(0),
             _ => None,
         }
     }
