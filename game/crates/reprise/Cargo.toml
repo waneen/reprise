@@ -30,6 +30,8 @@ bevy = { version = "0.19.1", default-features = false, features = [
 ] }
 # 読めない音を事前にはじくため（Bevy と同じ版。形式は Bevy の features で有効になる）
 rodio = { version = "0.22", default-features = false }
+# ランチャー（設定画面）を egui で描く
+bevy_egui = { version = "0.42.0", default-features = false, features = ["render", "default_fonts", "manage_clipboard"] }
 # スキン画像の読み込み（抜き色を自前で処理するため）
 image = { version = "0.25", default-features = false, features = ["png", "bmp", "jpeg", "gif", "tga"] }
 
@@ -45,6 +47,8 @@ song-db = { path = "../adapters/song-db" }
 bms-table = { path = "../adapters/bms-table" }
 # TEXT のシステムフォント（OS のフォントから探す）
 bevy = { version = "0.19.1", default-features = false, features = ["system_font_discovery"] }
+# ランチャーの日本語の字を OS のフォントから探す（Bevy の文字と同じ版）
+fontique = "0.9"
 
 # ブラウザだけ: ページから渡されたファイルと引数を読む
 [target.'cfg(target_arch = "wasm32")'.dependencies]

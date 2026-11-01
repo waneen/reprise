@@ -425,3 +425,14 @@ fn rmt_08_check(#[case] status: u16, #[case] want: Option<&str>) {
         (g, w) => panic!("{g:?} / {w:?}"),
     }
 }
+
+/// RMT-09: 難易度表の取り直し
+#[rstest]
+#[case::updated(200, r#"{"version":7}"#, Some(7))]
+#[case::refused(401, "", None)]
+fn rmt_09_update_tables(#[case] status: u16, #[case] body: &str, #[case] want: Option<u64>) {
+    let (f, r) = remote();
+    f.answer("POST", "/api/tables/update", status, body);
+    assert_eq!(r.update_tables().ok(), want);
+    assert_eq!(asked(&f), vec!["POST /api/tables/update"]);
+}

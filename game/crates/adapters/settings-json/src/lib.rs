@@ -14,8 +14,11 @@
 //! | SJS-09 | スキン設定の選択は `skin_custom` に スキンのパス → { 項目名: 選んだ名前（文字列）}（無しは空） |
 //! | SJS-10 | 選曲の並べ替え・絞り込みは `select_sort`（0..4）・`select_key`（0..7）・`select_difficulty`（0..5）、プレビュー音は `preview`（真偽）。範囲の外は既定（0・1・0）、無しは既定（プレビュー音は鳴らす） |
 //! | SJS-11 | 難易度表は `tables`（URL の文字列の配列。無しは空） |
+//! | SJS-12 | 画面は `screen_mode`（`window`・`fullscreen`）・`window_width`・`window_height`（APP-LCH-03 の範囲に収める）・`vsync`（真偽）。無しは既定（ウィンドウ・1280×720・切） |
+//! | SJS-13 | 音量は `volume`（0..=100 に収める。無しは 100） |
+//! | SJS-14 | 曲サーバーは `server_url`・`server_token`（文字列。無しは空） |
 use application::ports::{PortError, SettingsStore};
-use application::settings::Settings;
+use application::settings::{ScreenMode, Settings};
 use domain::input::{Side, Source, PLACES, SLOTS};
 use domain::play::{GaugeType, HsFix};
 use serde_json::{json, Map, Value};
@@ -43,6 +46,11 @@ const GAUGES: [(&str, GaugeType); 6] = [
     ("death", GaugeType::Hazard),
     ("pattack", GaugeType::PAttack),
     ("gattack", GaugeType::GAttack),
+];
+
+const SCREEN_MODES: [(&str, ScreenMode); 2] = [
+    ("window", ScreenMode::Window),
+    ("fullscreen", ScreenMode::Fullscreen),
 ];
 
 const HS_FIX: [(&str, HsFix); 6] = [
@@ -141,6 +149,13 @@ pub fn to_json(s: &Settings) -> Value {
         "select_difficulty": s.select.difficulty,
         "preview": s.preview,
         "tables": s.tables,
+        "screen_mode": name_of(&SCREEN_MODES, s.screen.mode),
+        "window_width": s.screen.width,
+        "window_height": s.screen.height,
+        "vsync": s.screen.vsync,
+        "volume": s.volume,
+        "server_url": s.server.url,
+        "server_token": s.server.token,
     })
 }
 
@@ -150,6 +165,12 @@ pub fn from_json(v: &Value) -> Result<Settings, PortError> {
     let o = v.as_object().ok_or_else(|| err("全体"))?;
     let path = |v: &Value| v.as_str().map(PathBuf::from).ok_or_else(|| err("パス"));
     let int = |v: &Value, what| v.as_i64().map(|n| n as i32).ok_or_else(|| err(what));
+    let uint = |v: &Value, what| {
+        v.as_u64()
+            .map(|n| n.min(u32::MAX as u64) as u32)
+            .ok_or_else(|| err(what))
+    };
+    let text = |v: &Value, what| v.as_str().map(str::to_string).ok_or_else(|| err(what));
     for (k, v) in o {
         match k.as_str() {
             "songs" => {
@@ -183,6 +204,13 @@ pub fn from_json(v: &Value) -> Result<Settings, PortError> {
                     .map(|u| u.as_str().map(str::to_string).ok_or_else(|| err("tables")))
                     .collect::<Result<_, _>>()?
             }
+            "screen_mode" => s.screen.mode = value_of(&SCREEN_MODES, v, "screen_mode")?,
+            "window_width" => s.screen.width = uint(v, "window_width")?,
+            "window_height" => s.screen.height = uint(v, "window_height")?,
+            "vsync" => s.screen.vsync = v.as_bool().ok_or_else(|| err("vsync"))?,
+            "volume" => s.volume = int(v, "volume")?,
+            "server_url" => s.server.url = text(v, "server_url")?,
+            "server_token" => s.server.token = text(v, "server_token")?,
             "analog_scratch_ms" if !v.is_null() => {
                 s.bindings.analog_scratch_ms =
                     Some(v.as_u64().ok_or_else(|| err("analog_scratch_ms"))? as u32)
@@ -222,7 +250,7 @@ pub fn from_json(v: &Value) -> Result<Settings, PortError> {
     }
     s.options = s.options.clamped();
     s.select = s.select.clamped();
-    Ok(s)
+    Ok(application::launcher::clamped(s))
 }
 
 /// `config.json` の中身を読む（ファイル以外に置くとき用。ブラウザ版はページの保存領域に置く）

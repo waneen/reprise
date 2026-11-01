@@ -15,6 +15,7 @@
 //! | RMT-06 | 曲の DB の SQL（`RemoteSongQuery`）: `POST /api/query` に SQL を送り、200 ならパスの並び、400 なら SQL の誤り |
 //! | RMT-07 | 曲一覧の届け先（`RemoteLibrary`）: 前に確かめてから 2 秒たったら `GET /api/version` を見て、版が上がっていれば `GET /api/library` の曲一覧を返し、覚えたフォルダの中身を忘れる |
 //! | RMT-08 | 応答の読み方: 2xx は成功、401 は合言葉の誤り、0 はつながらない、404 は無い、400 は送ったものの誤り（中身を伝える）、ほかはサーバーの誤り |
+//! | RMT-09 | 難易度表の取り直し: `POST /api/tables/update` を送り、答えの版を返す |
 use application::ports::{
     DirEntry, FileSystem, LibrarySource, PortError, ScoreRepository, SongQuery,
 };
@@ -484,6 +485,10 @@ impl Remote {
     pub fn library(&self) -> Result<(u64, Library), PortError> {
         let r: LibraryResponse = json(&self.call("GET", "/api/library", None)?)?;
         Ok((r.version, library_from_dto(r.library)))
+    }
+    /// RMT-09: 難易度表を取り直してもらう（答えは曲一覧の版）
+    pub fn update_tables(&self) -> Result<u64, PortError> {
+        Ok(json::<VersionDto>(&self.call("POST", "/api/tables/update", None)?)?.version)
     }
     /// 覚えたフォルダの中身を忘れる
     pub fn forget(&self) {
