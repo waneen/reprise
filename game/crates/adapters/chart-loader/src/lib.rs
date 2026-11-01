@@ -9,7 +9,7 @@
 //! | ADP-CH-03 | 位置→拍: Σ_{k<m} 4·len_k + 4·len_m·frac（len は小節長、既定 1） |
 //! | ADP-CH-04 | STOP は 1/192 小節（4/4）単位なので 拍 = d / 48 |
 //! | ADP-CH-05 | 鍵盤構成: Beat5→K5, Beat7→K7, Beat10→K10, Beat14→K14, Popn9→K9 |
-//! | ADP-CH-06 | ノーツ種別・BGM・BGA・音/画像定義・メタ情報をそのまま写す（LN の終端も拍に変換） |
+//! | ADP-CH-06 | ノーツ種別・BGM・BGA・音/画像定義・メタ情報（難易度を含む）をそのまま写す（LN の終端も拍に変換） |
 //! | ADP-CH-07 | `#RANDOM` は注入された `LegacyMt` で引く（`GetRand(n-1)+1`） |
 //! | ADP-CH-08 | 小節長の変化は `TimingEvent::Measure` として小節番号順に出す |
 //! | ADP-CH-09 | 音ファイルの解決（LR2 の `FindAltSound`）: 譜面のフォルダで書かれた名前、無ければ拡張子を ogg → wav → flac → mp3 に替えた名前（名前に既にその拡張子を含むものは飛ばす）、それも無ければ 1 つ上のフォルダの書かれた名前。名前の `\` は区切りとみなし、大小は区別しない |
@@ -183,6 +183,7 @@ pub fn map_chart(r: rc::ResolvedChart, hash: ChartHash) -> Chart {
             genre: m.genre,
             initial_bpm: m.initial_bpm,
             level: m.play_level,
+            difficulty: m.difficulty,
             total: m.total,
             judge_rank: m.rank,
             judge_rank_percent: m.judge_rank_percent,

@@ -1,7 +1,8 @@
 use crate::ports::*;
 use domain::score::{SaveMode, ScoreRecord};
+use domain::select::{Library, SongInfo};
 use domain::{chart::Chart, random::LegacyMt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// 譜面を読み込み、同じ乱数列を続けてレーン RANDOM に使えるよう rng も返す（LR2 互換）
 pub fn load_chart(
@@ -66,6 +67,47 @@ pub fn save_play(
     after.update_lr2(play, mode);
     repo.save(after.clone())?;
     Ok(Some(SavedScore { before, after }))
+}
+
+/// 選曲の曲一覧を作る（APP-UC-07）。登録したフォルダの中をすべて辿り、読める譜面のメタ情報を集める。
+/// メタ情報は乱数の種 0 で読む（`#RANDOM` の中の定義は種で変わりうる）
+pub fn scan_library(
+    fs: &dyn FileSystem,
+    loaders: &[Box<dyn ChartLoader>],
+    roots: &[PathBuf],
+) -> Library {
+    let mut folders = vec![];
+    let mut songs = vec![];
+    let mut dirs: Vec<PathBuf> = roots.to_vec();
+    while let Some(dir) = dirs.pop() {
+        for e in fs.list(&dir) {
+            if !e.is_file {
+                folders.push(e.path.clone());
+                dirs.push(e.path);
+                continue;
+            }
+            if !loaders.iter().any(|l| l.can_load(&e.path)) {
+                continue;
+            }
+            let Ok(bytes) = fs.read(&e.path) else {
+                continue;
+            };
+            if let Ok((c, _)) = load_chart(loaders, &e.path, &bytes, 0) {
+                songs.push(SongInfo {
+                    path: e.path,
+                    hash: c.hash,
+                    title: c.meta.title,
+                    subtitle: c.meta.subtitle,
+                    artist: c.meta.artist,
+                    genre: c.meta.genre,
+                    level: c.meta.level.unwrap_or(0),
+                    difficulty: c.meta.difficulty.unwrap_or(0),
+                    key_mode: c.key_mode,
+                });
+            }
+        }
+    }
+    Library::new(roots.to_vec(), folders, songs)
 }
 
 #[cfg(test)]
@@ -299,5 +341,90 @@ mod tests {
         assert_eq!(summary, want);
         let stored = repo.find(&hash(1), RulesetId::Lr2).unwrap();
         assert_eq!(stored, got.map(|s| s.after).or(best));
+    }
+
+    /// 中身を題名、1 バイト目を MD5 にするローダ（中身が "x" なら読めない）
+    struct BytesLoader;
+    impl ChartLoader for BytesLoader {
+        fn can_load(&self, p: &Path) -> bool {
+            p.extension().is_some_and(|e| e == "bms")
+        }
+        fn load(&self, _p: &Path, b: &[u8], _rng: &mut LegacyMt) -> Result<Chart, PortError> {
+            if b == b"x" {
+                return Err(PortError::Parse("x".into()));
+            }
+            let mut c = chart(&String::from_utf8_lossy(b));
+            c.hash = hash(b[0]);
+            c.meta.level = Some(3);
+            c.meta.difficulty = Some(4);
+            Ok(c)
+        }
+    }
+    /// パス → 中身 のファイル（フォルダは置いたファイルから分かる）
+    struct MapFs(Vec<(&'static str, &'static [u8])>);
+    impl FileSystem for MapFs {
+        fn list(&self, dir: &Path) -> Vec<DirEntry> {
+            let mut out: Vec<DirEntry> = vec![];
+            for (p, _) in &self.0 {
+                let Ok(rest) = Path::new(p).strip_prefix(dir) else {
+                    continue;
+                };
+                let mut c = rest.components();
+                let Some(first) = c.next() else { continue };
+                let path = dir.join(first);
+                if out.iter().all(|e| e.path != path) {
+                    out.push(DirEntry {
+                        name: first.as_os_str().to_string_lossy().into_owned(),
+                        path,
+                        is_file: c.next().is_none(),
+                    });
+                }
+            }
+            out
+        }
+        fn read(&self, path: &Path) -> Result<Vec<u8>, PortError> {
+            self.0
+                .iter()
+                .find(|(p, _)| Path::new(p) == path)
+                .map(|(_, b)| b.to_vec())
+                .ok_or_else(|| PortError::Io("none".into()))
+        }
+        fn is_file(&self, path: &Path) -> bool {
+            self.0.iter().any(|(p, _)| Path::new(p) == path)
+        }
+    }
+
+    /// APP-UC-07: 曲一覧の走査（開いた一覧で確かめる）
+    #[rstest]
+    #[case::songs("/r", vec!["/r/a/1.bms", "/r/b/2.bms"])]
+    #[case::nested_folders("/r2", vec!["[p]"])]
+    #[case::deep_songs("/r2/p", vec!["/r2/p/s/4.bms"])]
+    fn app_uc_07_scan_library(#[case] open: &str, #[case] want: Vec<&str>) {
+        let fs = MapFs(vec![
+            ("/r/a/1.bms", b"A"),
+            ("/r/b/2.bms", b"B"),
+            ("/r/b/readme.txt", b"C"),
+            ("/r/b/broken.bms", b"x"),
+            ("/r2/p/s/4.bms", b"D"),
+        ]);
+        let ls: Vec<Box<dyn ChartLoader>> = vec![Box::new(BytesLoader)];
+        let lib = scan_library(&fs, &ls, &[PathBuf::from("/r"), PathBuf::from("/r2")]);
+        let bars = lib.open(Path::new(open)).unwrap();
+        let got: Vec<String> = bars
+            .iter()
+            .map(|b| match b {
+                domain::select::Bar::Folder { title, .. } => format!("[{title}]"),
+                domain::select::Bar::Song(i) => {
+                    let s = &lib.songs()[*i];
+                    assert_eq!(
+                        (s.level, s.difficulty, s.hash.md5[0]),
+                        (3, 4, s.title.as_bytes()[0])
+                    );
+                    // Windows では join した部分が \ 区切りになる
+                    s.path.to_string_lossy().replace('\\', "/")
+                }
+            })
+            .collect();
+        assert_eq!(got, want);
     }
 }

@@ -145,6 +145,7 @@ fn adp_ch_06_note_mapping(
         Statement::Define(rc::Definition::Meta(rc::MetaField::Title("T".into()))),
         Statement::Define(rc::Definition::Meta(rc::MetaField::Subartist("S".into()))),
         Statement::Define(rc::Definition::Meta(rc::MetaField::JudgeRankPercent(80.0))),
+        Statement::Define(rc::Definition::Meta(rc::MetaField::Difficulty(5))),
     ];
     let c = load(doc(rc::KeyLayout::Beat7, s));
     assert_eq!(
@@ -160,6 +161,7 @@ fn adp_ch_06_note_mapping(
     assert_eq!(c.meta.title, "T");
     assert_eq!(c.meta.subartist, "S");
     assert_eq!(c.meta.judge_rank_percent, Some(80.0));
+    assert_eq!(c.meta.difficulty, Some(5));
 }
 
 /// ADP-CH-07: #RANDOM は LegacyMt（GetRand(n-1)+1）で引く

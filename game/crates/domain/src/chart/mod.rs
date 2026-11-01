@@ -52,7 +52,8 @@ mod tests {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 鍵盤数（並びは鍵盤数の小さい順）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum KeyMode {
     K5,
     K7,
@@ -120,6 +121,8 @@ pub struct ChartMeta {
     pub genre: String,
     pub initial_bpm: Option<f64>,
     pub level: Option<i32>,
+    /// BMS `#DIFFICULTY`（1..=5。選曲の並びに使う）
+    pub difficulty: Option<i32>,
     pub total: Option<f64>,
     /// BMS `#RANK`（0..=3 の段階）
     pub judge_rank: Option<i32>,
